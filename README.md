@@ -10,6 +10,8 @@ Sistema de extraccion de datos de precios mayoristas agricolas del boletin SIPA 
 ## Instalacion
 
 ```bash
+py -3.12 -m venv .venv
+.\.venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
