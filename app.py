@@ -7,9 +7,13 @@ Uso: streamlit run app.py
 
 import os
 import tempfile
+import sys
+import hashlib
 import pandas as pd
 import streamlit as st
 import nbformat
+
+
 
 st.set_page_config(
     page_title="Clasificador Precios SIPA",
@@ -19,7 +23,7 @@ st.set_page_config(
 
 
 @st.cache_resource
-def load_functions():
+def load_functions(notebook_fingerprint):
     notebook_path = os.path.join(os.path.dirname(__file__), "extractor.ipynb")
     with open(notebook_path, "r", encoding="utf-8") as f:
         notebook = nbformat.read(f, as_version=4)
@@ -43,7 +47,11 @@ def load_functions():
     return namespace["procesar_boletin"], namespace["validar_calidad"]
 
 
-procesar_boletin, validar_calidad = load_functions()
+notebook_path = os.path.join(os.path.dirname(__file__), "extractor.ipynb")
+with open(notebook_path, "rb") as notebook_file:
+    notebook_fingerprint = hashlib.sha256(notebook_file.read()).hexdigest()
+
+procesar_boletin, validar_calidad = load_functions(notebook_fingerprint)
 
 
 def main():
@@ -72,9 +80,6 @@ def main():
 
                     if registros:
                         df = pd.DataFrame(registros)
-                        variacion = (df["precio_actual"] - df["precio_anterior"]) / df["precio_anterior"] * 100
-                        variacion = variacion.replace([float("inf"), float("-inf")], 0)
-                        df["variacion_pct"] = variacion.fillna(0).round(0).astype(int)
 
                         reporte = validar_calidad(df, encabezados_fallidos)
 
@@ -83,7 +88,7 @@ def main():
 
                         st.session_state["df"] = df
                         st.session_state["reporte"] = reporte
-                        st.session_state["filename"] = uploaded_file.filename
+                        st.session_state["filename"] = uploaded_file.name
 
                 except Exception as e:
                     st.error(f"Error: {e}")
