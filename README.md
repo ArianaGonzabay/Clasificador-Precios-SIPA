@@ -16,7 +16,8 @@ pip install -r requirements.txt
 ## Ejecucion
 
 ```bash
-run_app.bat
+.\.venv\Scripts\activate
+streamlit run app.py
 ```
 
 La interfaz se abre en `http://localhost:8501`. Suba un boletin SIPA en formato PDF y haga clic en **Procesar**.
