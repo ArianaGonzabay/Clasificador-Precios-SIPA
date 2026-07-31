@@ -1,6 +1,7 @@
 pdfplumber>=0.11.0
 rapidocr-onnxruntime>=1.4.0
 Pillow>=10.0.0
-pandas>=2.0.0
-streamlit>=1.30.0
+numpy<=2.1
+pandas<=2.2
+streamlit<=1.40
 nbformat>=5.0.0

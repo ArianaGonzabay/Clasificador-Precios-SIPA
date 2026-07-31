@@ -1,6 +1,5 @@
 """
-Interfaz web con Streamlit para el Clasificador de Precios SIPA - Fase 1.
-CU-01: Preprocesar boletin de precios.
+Interfaz web con Streamlit para el Clasificador de Precios SIPA.
 
 Uso: streamlit run app.py
 """

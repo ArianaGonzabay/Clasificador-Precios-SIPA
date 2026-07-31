@@ -1,18 +1,22 @@
-# Clasificador-Precios-SIPA
+# Clasificador de Precios Mayoristas SIPA
 
-## Entorno
+Sistema de extraccion de datos de precios mayoristas agricolas del boletin SIPA (Ecuador) usando OCR.
+
+## Requisitos
 
 - Python 3.12
-- OCR con RapidOCR
+- pip
 
-Instalacion recomendada:
+## Instalacion
 
-```powershell
-py -3.12 -m pip install -r requirements.txt
+```bash
+pip install -r requirements.txt
 ```
 
-Ejecucion recomendada en Windows:
+## Ejecucion
 
-```powershell
-.\run_app.bat
+```bash
+run_app.bat
 ```
+
+La interfaz se abre en `http://localhost:8501`. Suba un boletin SIPA en formato PDF y haga clic en **Procesar**.
