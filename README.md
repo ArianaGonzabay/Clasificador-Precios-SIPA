@@ -7,6 +7,13 @@ Sistema de extraccion de datos de precios mayoristas agricolas del boletin SIPA 
 - Python 3.12
 - pip
 
+## Clonar el repositorio
+
+```bash
+git clone https://github.com/ArianaGonzabay/Clasificador-Precios-SIPA.git
+cd Clasificador-Precios-SIPA
+```
+
 ## Instalacion
 
 ```bash
