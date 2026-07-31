@@ -6,12 +6,10 @@ Uso: streamlit run app.py
 
 import os
 import tempfile
-import sys
 import hashlib
 import pandas as pd
 import streamlit as st
 import nbformat
-
 
 
 st.set_page_config(
@@ -22,7 +20,7 @@ st.set_page_config(
 
 
 @st.cache_resource
-def load_functions(notebook_fingerprint):
+def load_extractor(notebook_fingerprint):
     notebook_path = os.path.join(os.path.dirname(__file__), "extractor.ipynb")
     with open(notebook_path, "r", encoding="utf-8") as f:
         notebook = nbformat.read(f, as_version=4)
@@ -46,24 +44,44 @@ def load_functions(notebook_fingerprint):
     return namespace["procesar_boletin"], namespace["validar_calidad"]
 
 
-notebook_path = os.path.join(os.path.dirname(__file__), "extractor.ipynb")
-with open(notebook_path, "rb") as notebook_file:
-    notebook_fingerprint = hashlib.sha256(notebook_file.read()).hexdigest()
+@st.cache_resource
+def load_preprocesamiento(notebook_fingerprint):
+    notebook_path = os.path.join(os.path.dirname(__file__), "preprocesamiento.ipynb")
+    with open(notebook_path, "r", encoding="utf-8") as f:
+        notebook = nbformat.read(f, as_version=4)
 
-procesar_boletin, validar_calidad = load_functions(notebook_fingerprint)
+    namespace = {"__name__": "__main__"}
+    for cell in notebook.cells:
+        if cell.cell_type == "code":
+            exec(cell.source, namespace)
+
+    return namespace["preprocesar_datos"], namespace["obtener_resumen"]
+
+
+# Cargar notebooks
+extractor_path = os.path.join(os.path.dirname(__file__), "extractor.ipynb")
+with open(extractor_path, "rb") as f:
+    extractor_fp = hashlib.sha256(f.read()).hexdigest()
+
+preproc_path = os.path.join(os.path.dirname(__file__), "preprocesamiento.ipynb")
+with open(preproc_path, "rb") as f:
+    preproc_fp = hashlib.sha256(f.read()).hexdigest()
+
+procesar_boletin, validar_calidad = load_extractor(extractor_fp)
+preprocesar_datos, obtener_resumen = load_preprocesamiento(preproc_fp)
 
 
 def main():
     st.title("Clasificador de Precios Mayoristas SIPA")
-    st.markdown("**Fase 1:** Extraccion de datos de boletines del SIPA")
+    st.markdown("**Fase 1:** Extraccion y preprocesamiento de datos de boletines del SIPA")
 
     st.divider()
 
-    col_upload = st.columns(1)[0]
-
-    with col_upload:
-        st.header("1. Subir boletin")
-        uploaded_file = st.file_uploader("Seleccione un archivo PDF", type=["pdf"])
+    # =====================================================
+    # 1. SUBIR BOLETIN
+    # =====================================================
+    st.header("1. Subir boletin")
+    uploaded_file = st.file_uploader("Seleccione un archivo PDF", type=["pdf"])
 
     if uploaded_file is not None:
         st.divider()
@@ -79,7 +97,6 @@ def main():
 
                     if registros:
                         df = pd.DataFrame(registros)
-
                         reporte = validar_calidad(df, encabezados_fallidos)
 
                         if "orden" in df.columns:
@@ -94,6 +111,9 @@ def main():
                 finally:
                     os.unlink(tmp_path)
 
+    # =====================================================
+    # 2. RESULTADOS DE LA EXTRACCION
+    # =====================================================
     if "df" in st.session_state:
         df = st.session_state["df"]
         reporte = st.session_state["reporte"]
@@ -101,16 +121,14 @@ def main():
         st.divider()
         st.header("2. Resultados")
 
-        # Indicador de estado
         completitud = reporte["porcentaje_completitud"]
         if completitud >= 95:
-            st.success(f"Boletín procesado exitosamente - Completitud: {completitud}%")
+            st.success(f"Boletin procesado exitosamente - Completitud: {completitud}%")
         elif completitud >= 80:
-            st.warning(f"Boletín procesado con advertencias - Completitud: {completitud}%")
+            st.warning(f"Boletin procesado con advertencias - Completitud: {completitud}%")
         else:
-            st.error(f"Boletín con problemas significativos - Completitud: {completitud}%")
+            st.error(f"Boletin con problemas significativos - Completitud: {completitud}%")
 
-        # Métricas principales
         col1, col2, col3, col4, col5, col6 = st.columns(6)
         col1.metric("Registros", len(df))
         col2.metric("Completos", reporte["registros_completos"])
@@ -119,22 +137,20 @@ def main():
         col5.metric("Quincenas", reporte["quincenas"])
         col6.metric("Calidad", f"{completitud}%")
 
-        # Resumen de problemas
         hay_problemas = reporte["registros_con_problema"] > 0
         hay_parciales = reporte["registros_parciales"] > 0
-        revision_confirmada = False
 
-        # Sección de Registros Parciales (productos nuevos sin precio anterior)
+        # Registros Parciales
         if hay_parciales:
             st.divider()
             st.header("3. Registros Parciales (Productos Nuevos)")
-            st.info(f"Se encontraron {reporte['registros_parciales']} productos nuevos sin precio anterior. Solo tienen precio actual.")
+            st.info(f"Se encontraron {reporte['registros_parciales']} productos nuevos sin precio anterior.")
 
             df_parciales = df[df["estado_precio"] == "parcial"][["producto_raw", "precio_anterior", "precio_actual", "provincia", "quincena_id"]]
-            st.dataframe(df_parciales, use_container_width=True, height=200)
+            st.dataframe(df_parciales, use_container_width=True, height=200, hide_index=True)
 
             accion_parciales = st.radio(
-                "¿Qué desea hacer con los productos nuevos?",
+                "Que desea hacer con los productos nuevos?",
                 ["Conservar todos (recomendado para entrenar modelos)", "Excluir productos nuevos"],
                 horizontal=True,
                 key="accion_parciales"
@@ -144,67 +160,49 @@ def main():
                 df = df[df["estado_precio"] != "parcial"]
                 st.info(f"Se excluyeron {reporte['registros_parciales']} productos nuevos")
 
-        # Sección de Problemas (registros inválidos sin ningún precio)
+        # Registros con Problemas
         if hay_problemas:
             st.divider()
-            st.header("4. Registros Inválidos (Sin Precios)")
-            st.warning(f"Se encontraron {reporte['registros_con_problema']} registros sin ningún precio detectado. Estos son errores del OCR.")
+            st.header("4. Registros con Problemas")
 
-            # Tabla resumen por tipo
-            st.subheader("Resumen por Tipo de Problema")
-            resumen_data = []
-            for tipo, info in reporte["resumen_tipos"].items():
-                resumen_data.append({
-                    "Tipo": tipo.replace("_", " ").title(),
-                    "Cantidad": info["cantidad"],
-                    "Ejemplo": info["ejemplos"][0]["detalle"] if info["ejemplos"] else ""
-                })
-            st.dataframe(pd.DataFrame(resumen_data), use_container_width=True, hide_index=True)
+            n_invalidos = len(df[df["estado_precio"] == "invalido"])
+            n_parciales_en_df = len(df[df["estado_precio"] == "parcial"])
 
-            # Detalle de problemas
-            st.subheader("Detalle de Registros Inválidos")
-            df_problemas = pd.DataFrame(reporte["problemas"])
-            if "precio_anterior" not in df_problemas.columns:
-                df_problemas["precio_anterior"] = None
-            if "precio_actual" not in df_problemas.columns:
-                df_problemas["precio_actual"] = None
-            cols_inv = ["tipo", "producto", "precio_anterior", "precio_actual", "provincia", "quincena", "detalle"]
-            cols_inv = [c for c in cols_inv if c in df_problemas.columns]
-            st.dataframe(df_problemas[cols_inv], use_container_width=True, height=250)
-
-            accion_problemas = st.radio(
-                "¿Qué desea hacer con los registros inválidos?",
-                ["Mantener en el dataset (sin precio)", "Excluir del dataset"],
-                horizontal=True,
-                key="accion_problemas"
-            )
-
-            if accion_problemas.startswith("Excluir"):
+            if n_invalidos > 0:
                 df = df[df["estado_precio"] != "invalido"]
-                st.info(f"Se excluyeron {reporte['registros_invalidos']} registros inválidos")
+                st.warning(f"Se excluyeron {n_invalidos} registros sin precios.")
 
-        # Confirmación de revisión
+            st.subheader("Detalle de problemas")
+            df_problemas = pd.DataFrame(reporte["problemas"])
+            if not df_problemas.empty:
+                if "precio_anterior" not in df_problemas.columns:
+                    df_problemas["precio_anterior"] = None
+                if "precio_actual" not in df_problemas.columns:
+                    df_problemas["precio_actual"] = None
+                cols_inv = ["tipo", "producto", "precio_anterior", "precio_actual", "provincia", "quincena", "detalle"]
+                cols_inv = [c for c in cols_inv if c in df_problemas.columns]
+                st.dataframe(df_problemas[cols_inv], use_container_width=True, height=250, hide_index=True)
+
+        # Confirmacion de revision
         if hay_problemas or hay_parciales:
             st.divider()
-            num_revision = "5" if (hay_problemas or hay_parciales) else "3"
-            st.header(f"{num_revision}. Confirmar Revisión")
-            st.warning("Debe revisar los registros identificados antes de continuar.")
-            revision_confirmada = st.checkbox("Confirmo que revisé los registros listados arriba")
+            st.header("5. Confirmar Revision")
+            st.info("Revise los registros listados arriba.")
+            revision_confirmada = st.checkbox("Confirmo que revise los registros")
 
             if not revision_confirmada:
-                st.info("Por favor revise los registros y marque la casilla para continuar.")
                 st.stop()
 
         # Vista previa de datos
         st.divider()
         num_vista = "6" if (hay_problemas or hay_parciales) else "3"
         st.header(f"{num_vista}. Vista previa de datos")
-        st.dataframe(df, use_container_width=True, height=400)
+        st.dataframe(df, use_container_width=True, height=400, hide_index=True)
 
-        # Guardar dataset
+        # Guardar dataset crudo
         st.divider()
         num_guardar = "7" if (hay_problemas or hay_parciales) else "4"
-        st.header(f"{num_guardar}. Guardar dataset")
+        st.header(f"{num_guardar}. Guardar dataset crudo")
 
         col_save, col_download, col_report = st.columns(3)
 
@@ -234,6 +232,71 @@ def main():
                     data=reporte_csv,
                     file_name="reporte_calidad_sipa.csv",
                     mime="text/csv",
+                )
+
+        # =====================================================
+        # 8. PREPROCESAMIENTO
+        # =====================================================
+        st.divider()
+        num_preproc = "8" if (hay_problemas or hay_parciales) else "5"
+        st.header(f"{num_preproc}. Preprocesamiento")
+        st.markdown("Transformar los datos extraidos en un dataset listo para entrenar modelos de IA.")
+
+        if st.button("Ejecutar preprocesamiento", type="primary", use_container_width=True):
+            with st.spinner("Preprocesando datos..."):
+                try:
+                    col_requeridas = ["producto_raw", "precio_actual", "precio_anterior", "provincia", "estado_precio"]
+                    faltantes = [c for c in col_requeridas if c not in df.columns]
+                    if faltantes:
+                        st.error(f"Faltan columnas requeridas: {faltantes}")
+                    else:
+                        resultado = preprocesar_datos(df)
+                        st.session_state["resultado_preprocesamiento"] = resultado
+                        st.success("Preprocesamiento completado exitosamente")
+                except Exception as e:
+                    st.error(f"Error en preprocesamiento: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
+
+        # Mostrar resultados del preprocesamiento
+        if "resultado_preprocesamiento" in st.session_state:
+            resultado = st.session_state["resultado_preprocesamiento"]
+            stats = resultado["estadisticas"]
+
+            st.subheader("Resultado del Preprocesamiento")
+
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Entrada (registros validos)", stats["registros_completos"])
+            col2.metric("Salida (dataset final)", stats["registros_modelo"])
+            col3.metric("Productos descartados", stats["productos_descartados"])
+
+            if stats["productos_descartados"] > 0:
+                st.warning(f"{stats['productos_descartados']} productos fueron eliminados por tener mas del 30% de quincenas sin datos.")
+                df_desc = pd.DataFrame(resultado["productos_descartados"])
+                st.dataframe(df_desc, use_container_width=True, hide_index=True)
+
+            df_modelo = resultado["dataset_final"]
+            st.subheader("Vista previa del dataset final")
+            st.dataframe(df_modelo, use_container_width=True, height=400)
+
+            st.subheader("Guardar Dataset Preprocesado")
+            col_save2, col_download2 = st.columns(2)
+
+            with col_save2:
+                csv_path2 = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_preprocesado_sipa.csv")
+                if st.button("Guardar CSV preprocesado", type="secondary"):
+                    os.makedirs(os.path.dirname(csv_path2), exist_ok=True)
+                    df_modelo.to_csv(csv_path2, index=False, encoding="utf-8-sig")
+                    st.success(f"Guardado: {csv_path2}")
+
+            with col_download2:
+                csv_bytes2 = df_modelo.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+                st.download_button(
+                    label="Descargar CSV preprocesado",
+                    data=csv_bytes2,
+                    file_name="dataset_preprocesado_sipa.csv",
+                    mime="text/csv",
+                    type="primary",
                 )
 
 
