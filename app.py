@@ -7,9 +7,14 @@ Uso: streamlit run app.py
 import os
 import tempfile
 import hashlib
+import numpy as np
 import pandas as pd
 import streamlit as st
 import nbformat
+import matplotlib.pyplot as plt
+import seaborn as sns
+from entrenamiento_utils import ejecutar_entrenamiento_y_evaluacion
+from prediccion_utils import cargar_modelo_y_artefactos, predecir_registro, predecir_dataframe, obtener_ultimo_registro
 
 
 st.set_page_config(
@@ -73,7 +78,7 @@ preprocesar_datos, obtener_resumen = load_preprocesamiento(preproc_fp)
 
 def main():
     st.title("Clasificador de Precios Mayoristas SIPA")
-    st.markdown("**Fase 1:** Extraccion y preprocesamiento de datos de boletines del SIPA")
+    st.markdown("**Fase 1:** Extraccion y preprocesamiento | **Fase 2:** Entrenamiento y Evaluacion de Modelos")
 
     st.divider()
 
@@ -298,6 +303,157 @@ def main():
                     mime="text/csv",
                     type="primary",
                 )
+
+        # =====================================================
+        # 9. ENTRENAMIENTO Y EVALUACION DE MODELOS (FASE 2)
+        # =====================================================
+        if "resultado_preprocesamiento" in st.session_state:
+            st.divider()
+            num_entrena = "9" if (hay_problemas or hay_parciales) else "6"
+            st.header(f"{num_entrena}. Entrenamiento y Evaluacion de Modelos (Fase 2)")
+            st.markdown("Entrenar y evaluar modelos (Random Forest y XGBoost) con `TimeSeriesSplit` (5 folds).")
+
+            if st.button("Ejecutar entrenamiento y evaluacion", type="primary", use_container_width=True):
+                with st.spinner("Entrenando modelos con TimeSeriesSplit... Esto tomara unos segundos."):
+                    try:
+                        df_modelo = st.session_state["resultado_preprocesamiento"]["dataset_final"]
+                        le_prod = st.session_state["resultado_preprocesamiento"].get("le_producto")
+                        le_prov = st.session_state["resultado_preprocesamiento"].get("le_provincia")
+
+                        res_entrenamiento = ejecutar_entrenamiento_y_evaluacion(df_modelo, le_prod, le_prov)
+                        st.session_state["res_entrenamiento"] = res_entrenamiento
+                        st.success("Entrenamiento finalizado exitosamente")
+                    except Exception as e:
+                        st.error(f"Error durante el entrenamiento: {e}")
+                        import traceback
+                        st.code(traceback.format_exc())
+
+            if "res_entrenamiento" in st.session_state:
+                res = st.session_state["res_entrenamiento"]
+
+                st.subheader("1. Limpieza de filas sin rezago (NaN por historia)")
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Filas iniciales", res["filas_antes"])
+                c2.metric("Filas eliminadas", res["filas_eliminadas"])
+                c3.metric("Filas para entrenamiento", res["filas_despues"])
+
+                st.subheader("2. Tabla Comparativa de Modelos")
+                st.markdown("**Criterios de seleccion:** F1-Score (Macro) ≥ 0.75 y Accuracy ≥ 0.80")
+                st.dataframe(res["tabla_comparativa"], use_container_width=True, hide_index=True)
+
+                st.success(f"**MODELO SELECCIONADO:** {res['mejor_nombre']} | F1-Score: {res['mejor_metricas']['F1-Score (Macro)']} | Accuracy: {res['mejor_metricas']['Accuracy']}")
+
+        # =====================================================
+        # 10. CLASIFICACION Y PREDICCION DE PRECIOS (FASE 3)
+        # =====================================================
+        st.divider()
+        num_pred = "10" if (hay_problemas or hay_parciales) else "7"
+        st.header(f"{num_pred}. Clasificacion y Prediccion de Precios (Fase 3)")
+        st.markdown("Realizar clasificaciones del comportamiento del precio (*Alza*, *Estable*, *Caida*) utilizando el modelo entrenado guardado.")
+
+        modelo, le_target, le_prod, le_prov, features = cargar_modelo_y_artefactos()
+
+        if modelo is None:
+            st.info("Para realizar predicciones, ejecute primero el entrenamiento del modelo en la seccion anterior.")
+        else:
+            st.success("Modelo entrenado cargado exitosamente.")
+
+            tab_indiv, tab_lote = st.tabs(["Prediccion por Producto y Provincia", "Clasificacion en Lote (Dataset)"])
+
+            # --- TAB 1: PREDICCIÓN POR PRODUCTO Y PROVINCIA ---
+            with tab_indiv:
+                st.subheader("Seleccionar Producto y Provincia")
+
+                prods_lista = list(le_prod.classes_) if le_prod else ["General"]
+                provs_lista = list(le_prov.classes_) if le_prov else ["General"]
+
+                col_p1, col_p2 = st.columns(2)
+                with col_p1:
+                    sel_producto = st.selectbox("Seleccione el Producto", prods_lista, key="pred_prod")
+                with col_p2:
+                    sel_provincia = st.selectbox("Seleccione la Provincia", provs_lista, key="pred_prov")
+
+                df_final = st.session_state.get("resultado_preprocesamiento", {}).get("dataset_final")
+                rec = obtener_ultimo_registro(df_final, sel_producto, sel_provincia) if df_final is not None else None
+
+                if rec is not None:
+                    st.divider()
+                    st.subheader("Datos Historicos Detectados en el Dataset")
+
+                    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+                    col_m1.metric("Periodo / Quincena", str(rec.get("periodo", "N/A")))
+                    col_m2.metric("Precio Quincena Anterior (t1)", f"${rec.get('precio_t1', 0):.2f}" if pd.notna(rec.get('precio_t1')) else "N/A")
+                    col_m3.metric("Precio Hace 2 Quincenas (t2)", f"${rec.get('precio_t2', 0):.2f}" if pd.notna(rec.get('precio_t2')) else "N/A")
+                    col_m4.metric("Precio Registrado en Boletin", f"${rec.get('precio_actual', 0):.2f}" if pd.notna(rec.get('precio_actual')) else "N/A")
+
+                    val_pt1 = rec.get("precio_t1")
+                    val_pt2 = rec.get("precio_t2")
+                    val_mes = int(rec.get("mes", 6)) if pd.notna(rec.get("mes")) else 6
+                    comp_real = rec.get("comportamiento", None)
+
+                    if pd.notna(val_pt1) and pd.notna(val_pt2):
+                        if st.button("Clasificar / Predecir Comportamiento", type="primary", use_container_width=True, key="btn_predecir_auto"):
+                            pred_label, probs, inputs_derived = predecir_registro(
+                                val_pt1, val_pt2, val_mes,
+                                sel_producto, sel_provincia,
+                                le_prod, le_prov, le_target, modelo, features
+                            )
+
+                            st.divider()
+                            st.markdown("### Resultado de la Clasificacion")
+
+                            col_r1, col_r2 = st.columns(2)
+                            with col_r1:
+                                if pred_label == "Alza":
+                                    st.error(f"**Prediccion del Modelo: ALZA**\n\n(Pronostico de incremento de precio > +3%)")
+                                elif pred_label == "Caída":
+                                    st.success(f"**Prediccion del Modelo: CAÍDA**\n\n(Pronostico de reduccion de precio > -3%)")
+                                else:
+                                    st.warning(f"**Prediccion del Modelo: ESTABLE**\n\n(El precio se mantendra en el rango de ±3%)")
+
+                            with col_r2:
+                                if comp_real:
+                                    st.info(f"**Comportamiento Real Registrado:** {comp_real}")
+
+                            if probs:
+                                st.markdown("**Confianza de la Clasificacion:**")
+                                cols_prob = st.columns(len(probs))
+                                for idx, (cls_name, prob_val) in enumerate(probs.items()):
+                                    cols_prob[idx].metric(f"Probabilidad {cls_name}", f"{prob_val}%")
+                    else:
+                        st.warning("Este registro no cuenta con suficiente historia previa (NaN) para clasificar.")
+                else:
+                    st.info("No se encontraron registros para la combinacion seleccionada. Ejecute primero el preprocesamiento en la seccion 8.")
+
+
+            # --- TAB 2: CLASIFICACIÓN EN LOTE ---
+            with tab_lote:
+                st.subheader("Clasificar todo el dataset preprocesado")
+                if "resultado_preprocesamiento" in st.session_state:
+                    df_final_lote = st.session_state["resultado_preprocesamiento"]["dataset_final"]
+
+                    if st.button("Ejecutar clasificacion en lote", type="secondary", use_container_width=True, key="btn_lote"):
+                        df_predicho = predecir_dataframe(df_final_lote, modelo, le_target, features)
+                        st.session_state["df_predicho"] = df_predicho
+                        st.success(f"Clasificados {len(df_predicho)} registros")
+
+                    if "df_predicho" in st.session_state:
+                        df_res = st.session_state["df_predicho"]
+                        cols_mostrar = ["producto", "provincia", "periodo", "precio_t1", "precio_actual", "comportamiento", "prediccion"]
+                        cols_mostrar = [c for c in cols_mostrar if c in df_res.columns]
+
+                        st.dataframe(df_res[cols_mostrar], use_container_width=True, height=350)
+
+                        csv_lote = df_res.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+                        st.download_button(
+                            label="Descargar Predicciones (CSV)",
+                            data=csv_lote,
+                            file_name="predicciones_sipa.csv",
+                            mime="text/csv",
+                            type="primary",
+                        )
+                else:
+                    st.info("Debe ejecutar el preprocesamiento en el paso 8 para clasificar el dataset completo.")
 
 
 if __name__ == "__main__":
