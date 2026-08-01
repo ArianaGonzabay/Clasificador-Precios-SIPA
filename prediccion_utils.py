@@ -32,12 +32,27 @@ def cargar_modelo_y_artefactos(models_dir=None):
 def obtener_ultimo_registro(df, producto, provincia):
     """
     Busca en el dataset el registro más reciente para la combinación de producto y provincia.
+    Si no existe la combinación exacta con esa provincia, busca el último registro válido de ese producto.
     """
     if df is None or df.empty:
         return None
+
+    # 1. Coincidencia exacta producto + provincia
     df_sub = df[(df["producto"] == producto) & (df["provincia"] == provincia)]
+
+    # 2. Si no hay coincidencia exacta de esa provincia, buscar por producto en cualquier provincia
+    if df_sub.empty:
+        df_sub = df[df["producto"] == producto]
+
     if df_sub.empty:
         return None
+
+    # Preferir registros con precio_t1 válido
+    if "precio_t1" in df_sub.columns:
+        df_validos = df_sub[df_sub["precio_t1"].notna()]
+        if not df_validos.empty:
+            return df_validos.iloc[-1].to_dict()
+
     return df_sub.iloc[-1].to_dict()
 
 

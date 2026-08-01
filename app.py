@@ -11,15 +11,13 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import nbformat
-import matplotlib.pyplot as plt
-import seaborn as sns
 from entrenamiento_utils import ejecutar_entrenamiento_y_evaluacion
 from prediccion_utils import cargar_modelo_y_artefactos, predecir_registro, predecir_dataframe, obtener_ultimo_registro
 
 
 st.set_page_config(
     page_title="Clasificador Precios SIPA",
-    page_icon="🌾",
+    page_icon="",
     layout="wide",
 )
 
@@ -76,15 +74,45 @@ procesar_boletin, validar_calidad = load_extractor(extractor_fp)
 preprocesar_datos, obtener_resumen = load_preprocesamiento(preproc_fp)
 
 
+def cargar_dataset_preprocesado():
+    """
+    Obtiene el dataset preprocesado desde session_state o lo carga automáticamente desde el CSV guardado en disco.
+    Si solo existe el dataset crudo, ejecuta el preprocesamiento automáticamente.
+    """
+    if "resultado_preprocesamiento" in st.session_state:
+        return st.session_state["resultado_preprocesamiento"].get("dataset_final")
+
+    csv_preproc = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_preprocesado_sipa.csv")
+    if os.path.exists(csv_preproc):
+        try:
+            return pd.read_csv(csv_preproc)
+        except Exception:
+            pass
+
+    csv_crudo = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_crudo_sipa.csv")
+    if os.path.exists(csv_crudo):
+        try:
+            df_crudo = pd.read_csv(csv_crudo)
+            res = preprocesar_datos(df_crudo)
+            st.session_state["resultado_preprocesamiento"] = res
+            os.makedirs(os.path.dirname(csv_preproc), exist_ok=True)
+            res["dataset_final"].to_csv(csv_preproc, index=False, encoding="utf-8-sig")
+            return res["dataset_final"]
+        except Exception:
+            pass
+
+    return None
+
+
 def main():
     st.title("Clasificador de Precios Mayoristas SIPA")
     st.markdown("Sistema de Extracción, Preprocesamiento, Entrenamiento y Predicción de Precios Agrícolas")
 
-    # Organización en 3 Pestañas Principales
+    # Pestañas principales
     tab1, tab2, tab3 = st.tabs([
-        "📁 1. Extracción y Preprocesamiento",
-        "🤖 2. Entrenamiento de Modelos",
-        "📈 3. Predicción de Precios"
+        "1. Extracción y Preprocesamiento",
+        "2. Entrenamiento de Modelos",
+        "3. Predicción de Precios"
     ])
 
     # =========================================================================
@@ -116,6 +144,11 @@ def main():
                             st.session_state["df"] = df
                             st.session_state["reporte"] = reporte
                             st.session_state["filename"] = uploaded_file.name
+
+                            # Autoguardado dataset crudo
+                            csv_crudo_path = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_crudo_sipa.csv")
+                            os.makedirs(os.path.dirname(csv_crudo_path), exist_ok=True)
+                            df.to_csv(csv_crudo_path, index=False, encoding="utf-8-sig")
 
                     except Exception as e:
                         st.error(f"Error: {e}")
@@ -239,7 +272,13 @@ def main():
                         else:
                             resultado = preprocesar_datos(df)
                             st.session_state["resultado_preprocesamiento"] = resultado
-                            st.success("Preprocesamiento completado exitosamente")
+
+                            # Autoguardado del dataset preprocesado en disco
+                            csv_preproc_path = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_preprocesado_sipa.csv")
+                            os.makedirs(os.path.dirname(csv_preproc_path), exist_ok=True)
+                            resultado["dataset_final"].to_csv(csv_preproc_path, index=False, encoding="utf-8-sig")
+
+                            st.success("Preprocesamiento completado exitosamente y guardado en disco")
                     except Exception as e:
                         st.error(f"Error en preprocesamiento: {e}")
                         import traceback
@@ -290,17 +329,18 @@ def main():
         st.header("Entrenamiento y Evaluación de Modelos (Fase 2)")
         st.markdown("Entrenar y evaluar modelos de clasificación (**Random Forest** y **XGBoost**) utilizando división temporal (`TimeSeriesSplit` con 5 folds).")
 
-        if "resultado_preprocesamiento" not in st.session_state:
+        df_preproc_disponible = cargar_dataset_preprocesado()
+
+        if df_preproc_disponible is None:
             st.info("Para entrenar los modelos, primero suba un boletín y ejecute el preprocesamiento en la pestaña **'1. Extracción y Preprocesamiento'**.")
         else:
             if st.button("Ejecutar entrenamiento y evaluación", type="primary", use_container_width=True, key="btn_train_models"):
                 with st.spinner("Entrenando modelos con TimeSeriesSplit... Esto tomará unos segundos."):
                     try:
-                        df_modelo = st.session_state["resultado_preprocesamiento"]["dataset_final"]
-                        le_prod = st.session_state["resultado_preprocesamiento"].get("le_producto")
-                        le_prov = st.session_state["resultado_preprocesamiento"].get("le_provincia")
+                        le_prod = st.session_state.get("resultado_preprocesamiento", {}).get("le_producto")
+                        le_prov = st.session_state.get("resultado_preprocesamiento", {}).get("le_provincia")
 
-                        res_entrenamiento = ejecutar_entrenamiento_y_evaluacion(df_modelo, le_prod, le_prov)
+                        res_entrenamiento = ejecutar_entrenamiento_y_evaluacion(df_preproc_disponible, le_prod, le_prov)
                         st.session_state["res_entrenamiento"] = res_entrenamiento
                         st.success("Entrenamiento finalizado exitosamente")
                     except Exception as e:
@@ -330,14 +370,15 @@ def main():
     # =========================================================================
     with tab3:
         st.header("Clasificación y Predicción de Precios (Fase 3)")
-        st.markdown("Realizar clasificaciones del comportamiento del precio (*Alza*, *Estable*, *Caída*) utilizando el mejor modelo entrenado.")
+        st.markdown("Realizar clasificaciones del comportamiento del precio (*Alza*, *Estable*, *Caída*) utilizando el modelo entrenado guardado.")
 
         modelo, le_target, le_prod, le_prov, features = cargar_modelo_y_artefactos()
+        df_preproc = cargar_dataset_preprocesado()
 
         if modelo is None:
             st.info("Para realizar predicciones, ejecute primero el entrenamiento del modelo en la pestaña **'2. Entrenamiento de Modelos'**.")
         else:
-            st.success("Modelo entrenado cargado exitosamente y listo para clasificar.")
+            st.success("Modelo entrenado cargado exitosamente desde disco.")
 
             tab_sub_indiv, tab_sub_lote = st.tabs(["Predicción por Producto y Provincia", "Clasificación en Lote (Dataset)"])
 
@@ -345,8 +386,8 @@ def main():
             with tab_sub_indiv:
                 st.subheader("Seleccionar Producto y Provincia")
 
-                prods_lista = list(le_prod.classes_) if le_prod else ["General"]
-                provs_lista = list(le_prov.classes_) if le_prov else ["General"]
+                prods_lista = list(le_prod.classes_) if le_prod else (list(df_preproc["producto"].unique()) if (df_preproc is not None and "producto" in df_preproc.columns) else ["General"])
+                provs_lista = list(le_prov.classes_) if le_prov else (list(df_preproc["provincia"].unique()) if (df_preproc is not None and "provincia" in df_preproc.columns) else ["General"])
 
                 col_p1, col_p2 = st.columns(2)
                 with col_p1:
@@ -354,8 +395,7 @@ def main():
                 with col_p2:
                     sel_provincia = st.selectbox("Seleccione la Provincia", provs_lista, key="pred_prov_tab3")
 
-                df_final = st.session_state.get("resultado_preprocesamiento", {}).get("dataset_final")
-                rec = obtener_ultimo_registro(df_final, sel_producto, sel_provincia) if df_final is not None else None
+                rec = obtener_ultimo_registro(df_preproc, sel_producto, sel_provincia) if df_preproc is not None else None
 
                 if rec is not None:
                     st.divider()
@@ -404,16 +444,17 @@ def main():
                     else:
                         st.warning("Este registro no cuenta con suficiente historia previa (NaN) para clasificar.")
                 else:
-                    st.info("No se encontraron registros para la combinación seleccionada. Suba un boletín y ejecute el preprocesamiento en la Pestaña 1.")
+                    if df_preproc is None:
+                        st.info("Para detectar precios automáticamente, suba un boletín y ejecute el preprocesamiento en la Pestaña 1 una primera vez.")
+                    else:
+                        st.info("No se encontraron registros en el dataset para esta combinación específica de producto y provincia.")
 
             # --- SUB-TAB 2: CLASIFICACIÓN EN LOTE ---
             with tab_sub_lote:
                 st.subheader("Clasificar todo el dataset preprocesado")
-                if "resultado_preprocesamiento" in st.session_state:
-                    df_final_lote = st.session_state["resultado_preprocesamiento"]["dataset_final"]
-
+                if df_preproc is not None:
                     if st.button("Ejecutar clasificación en lote", type="secondary", use_container_width=True, key="btn_lote_tab3"):
-                        df_predicho = predecir_dataframe(df_final_lote, modelo, le_target, features)
+                        df_predicho = predecir_dataframe(df_preproc, modelo, le_target, features)
                         st.session_state["df_predicho"] = df_predicho
                         st.success(f"Clasificados {len(df_predicho)} registros")
 
