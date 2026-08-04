@@ -47,6 +47,10 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
     modelos_config = {
         "Random Forest": RandomForestClassifier(n_estimators=200, max_depth=10, random_state=42, n_jobs=-1),
         "XGBoost": XGBClassifier(learning_rate=0.05, tree_method="hist", random_state=42, eval_metric="mlogloss", n_jobs=-1),
+        "Decision Tree": DecisionTreeClassifier(max_depth=5, min_samples_split=5, random_state=42),
+        "Logistic Regression": LogisticRegression(C=1.0, solver="lbfgs", max_iter=1000, random_state=42),
+        "KNN": KNeighborsClassifier(n_neighbors=5, weights="distance"),
+        "SVM": SVC(C=1.0, kernel="rbf", random_state=42, probability=True),
     }
 
     resultados = {}
