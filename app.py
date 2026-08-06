@@ -56,7 +56,12 @@ def load_preprocesamiento(notebook_fingerprint):
     namespace = {"__name__": "__main__"}
     for cell in notebook.cells:
         if cell.cell_type == "code":
-            exec(cell.source, namespace)
+            # Filtra las líneas que inician con % (mágicos) o ! (comandos de terminal)
+            clean_source = "\n".join(
+                line for line in cell.source.splitlines()
+                if not line.strip().startswith(("%", "!"))
+            )
+            exec(clean_source, namespace)
 
     return namespace["preprocesar_datos"], namespace["obtener_resumen"]
 

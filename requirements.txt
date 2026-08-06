@@ -8,3 +8,4 @@ nbformat>=5.0.0
 matplotlib>=3.5.0
 seaborn>=0.12.0
 scikit-learn>=1.0.0
+xgoost
