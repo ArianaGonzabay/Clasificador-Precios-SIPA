@@ -20,7 +20,122 @@ st.set_page_config(
     page_icon="",
     layout="wide",
 )
+CSS_TEMA = """
+<style>
+    :root {
+        --verde-campo: #2d6a4f;
+        --verde-claro: #52b788;
+        --verde-oscuro: #1b4332;
+        --naranja-tierra: #e07a5f;
+        --fondo-app: #0f1a14;
+        --fondo-tarjeta: #16241c;
+    }
 
+    /* Fondo general de la app */
+    .stApp {
+        background: linear-gradient(180deg, #0f1a14 0%, #10201a 100%);
+    }
+
+    /* Fondo de la barra lateral */
+    section[data-testid="stSidebar"] {
+        background-color: #0d1712;
+        border-right: 1px solid rgba(82, 183, 136, 0.15);
+    }
+
+    /* Header principal con degradado agrícola */
+    .encabezado-sipa {
+        background: linear-gradient(120deg, #1b4332 0%, #2d6a4f 55%, #52b788 100%);
+        padding: 2rem 2.2rem;
+        border-radius: 14px;
+        margin-bottom: 1.5rem;
+        box-shadow: 0 4px 18px rgba(0,0,0,0.35);
+    }
+    .encabezado-sipa h1 {
+        color: white;
+        margin: 0;
+        font-size: 2rem;
+        font-weight: 800;
+    }
+    .encabezado-sipa p {
+        color: #d8f3dc;
+        margin: 0.4rem 0 0 0;
+        font-size: 0.95rem;
+    }
+    .encabezado-sipa .badge {
+        display: inline-block;
+        background: rgba(255,255,255,0.15);
+        color: white;
+        padding: 0.15rem 0.7rem;
+        border-radius: 20px;
+        font-size: 0.75rem;
+        margin-top: 0.6rem;
+        letter-spacing: 0.03em;
+    }
+
+    /* Tarjetas de métricas */
+    div[data-testid="stMetric"] {
+        background: var(--fondo-tarjeta);
+        border: 1px solid rgba(82, 183, 136, 0.25);
+        border-left: 4px solid var(--verde-campo);
+        border-radius: 10px;
+        padding: 0.9rem 1.1rem;
+    }
+    div[data-testid="stMetricLabel"] {
+        font-weight: 600;
+        opacity: 0.85;
+    }
+
+    /* Contenedores de dataframes y expanders con tarjeta oscura verde */
+    div[data-testid="stDataFrame"], div[data-testid="stExpander"] {
+        background: var(--fondo-tarjeta);
+        border-radius: 10px;
+        border: 1px solid rgba(82, 183, 136, 0.15);
+    }
+
+    /* Pestañas principales */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 4px;
+        border-bottom: 2px solid rgba(82, 183, 136, 0.25);
+    }
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 8px 8px 0 0;
+        padding: 0.6rem 1.2rem;
+        font-weight: 600;
+        color: #b7e4c7;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: rgba(82, 183, 136, 0.12) !important;
+        color: white !important;
+    }
+
+    /* Botones primarios */
+    div.stButton > button[kind="primary"] {
+        background-color: var(--verde-campo);
+        border: none;
+        font-weight: 600;
+    }
+    div.stButton > button[kind="primary"]:hover {
+        background-color: var(--verde-claro);
+    }
+
+    /* Barra de progreso */
+    div[data-testid="stProgress"] > div > div {
+        background-color: var(--verde-claro);
+    }
+
+    /* Divisores más sutiles */
+    hr {
+        border-color: rgba(82, 183, 136, 0.2) !important;
+    }
+
+    /* Encabezados de sección (st.header / st.subheader) */
+    h1, h2, h3 {
+        color: #eaf5ee;
+    }
+</style>
+"""
+
+st.markdown(CSS_TEMA, unsafe_allow_html=True)
 
 @st.cache_resource
 def load_extractor(notebook_fingerprint):
@@ -110,15 +225,44 @@ def cargar_dataset_preprocesado():
 
 
 def main():
-    st.title("Clasificador de Precios Mayoristas SIPA")
-    st.markdown("Sistema de Extracción, Preprocesamiento, Entrenamiento y Predicción de Precios Agrícolas")
+    ENCABEZADO_HTML = """
+    <div class="encabezado-sipa">
+        <h1>🌽 Clasificador de Precios Mayoristas SIPA</h1>
+        <p>Predicción del comportamiento de precios agrícolas en Ecuador mediante
+        aprendizaje automático supervisado — Random Forest, XGBoost, Decision Tree,
+        Logistic Regression, KNN y SVM</p>
+        <span class="badge">Fuente: Sistema de Información Pública Agropecuaria (SIPA)</span>
+    </div>
+    """
+    st.markdown(ENCABEZADO_HTML, unsafe_allow_html=True)
 
     # Pestañas principales
     tab1, tab2, tab3 = st.tabs([
-        "1. Extracción y Preprocesamiento",
-        "2. Entrenamiento de Modelos",
-        "3. Predicción de Precios"
+        "📥 1. Extracción y Preprocesamiento",
+        "🤖 2. Entrenamiento de Modelos",
+        "📈 3. Predicción de Precios",
     ])
+
+    with st.sidebar:
+        st.markdown("### 🌾 Proyecto")
+        st.caption("Grupo 4 · Inteligencia Artificial · ESPOL")
+        st.markdown("---")
+    
+        st.markdown("### 📋 Estado del pipeline")
+        estado_df = "df" in st.session_state
+        estado_preproc = "resultado_preprocesamiento" in st.session_state
+        estado_modelo = "res_entrenamiento" in st.session_state
+    
+        st.markdown(f"{'✅' if estado_df else '⬜'} Boletines extraídos")
+        st.markdown(f"{'✅' if estado_preproc else '⬜'} Datos preprocesados")
+        st.markdown(f"{'✅' if estado_modelo else '⬜'} Modelo entrenado")
+    
+        st.markdown("---")
+        st.markdown("### ℹ️ Sobre el proyecto")
+        st.caption(
+            "Clasifica el comportamiento futuro de precios mayoristas agrícolas "
+            "(Alza / Estable / Caída) a partir de boletines quincenales del SIPA."
+        )
 
     # =========================================================================
     # PESTAÑA 1: EXTRACCIÓN Y PREPROCESAMIENTO
@@ -460,12 +604,30 @@ def main():
                             col_r1, col_r2 = st.columns(2)
                             with col_r1:
                                 if pred_label == "Alza":
-                                    st.error(f"**Predicción del Modelo: ALZA**\n\n(Pronóstico de incremento de precio > +3%)")
+                                    st.markdown('''
+                                    <div style="background:#5c1a1a;border-left:5px solid #e63946;
+                                                padding:1rem 1.2rem;border-radius:10px;">
+                                        <span style="font-size:1.6rem;">📈</span>
+                                        <b style="color:#ffb3ba;font-size:1.1rem;"> ALZA</b><br>
+                                        <span style="color:#f1c0c0;">Pronóstico de incremento de precio &gt; +3%</span>
+                                    </div>''', unsafe_allow_html=True)
                                 elif pred_label == "Caída":
-                                    st.success(f"**Predicción del Modelo: CAÍDA**\n\n(Pronóstico de reducción de precio > -3%)")
+                                    st.markdown('''
+                                    <div style="background:#1b4332;border-left:5px solid #52b788;
+                                                padding:1rem 1.2rem;border-radius:10px;">
+                                        <span style="font-size:1.6rem;">📉</span>
+                                        <b style="color:#b7e4c7;font-size:1.1rem;"> CAÍDA</b><br>
+                                        <span style="color:#d8f3dc;">Pronóstico de reducción de precio &lt; -3%</span>
+                                    </div>''', unsafe_allow_html=True)
                                 else:
-                                    st.warning(f"**Predicción del Modelo: ESTABLE**\n\n(El precio se mantendrá en el rango de ±3%)")
-
+                                    st.markdown('''
+                                    <div style="background:#4a3b1f;border-left:5px solid #e9c46a;
+                                                padding:1rem 1.2rem;border-radius:10px;">
+                                        <span style="font-size:1.6rem;">➡️</span>
+                                        <b style="color:#f4dfa8;font-size:1.1rem;"> ESTABLE</b><br>
+                                        <span style="color:#f0e6c8;">El precio se mantendrá en el rango de ±3%</span>
+                                    </div>''', unsafe_allow_html=True)
+                            
                             with col_r2:
                                 if comp_real:
                                     st.info(f"**Comportamiento Real Registrado:** {comp_real}")

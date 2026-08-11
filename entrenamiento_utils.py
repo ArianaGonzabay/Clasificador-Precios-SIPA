@@ -10,18 +10,23 @@ from sklearn.svm import SVC
 from xgboost import XGBClassifier
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, confusion_matrix
-from sklearn.preprocessing import LabelEncoder
-from sklearn.base import clone
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.utils.class_weight import compute_sample_weight
+from sklearn.base import clone
 
+# FEATURES restauradas: se vuelve a incluir precio_t1, precio_t2 y promedios móviles,
+# y se agrega categoria_perecedero (requiere el cambio en preprocesamiento.ipynb)
 FEATURES = [
-    "variacion_t2_t1", 
-    "mes", 
-    "producto_encoded", 
-    "provincia_encoded"
+    "precio_t1", "precio_t2", "variacion_t2_t1",
+    "promedio_movil_2q", "promedio_movil_3q",
+    "mes", "producto_encoded", "provincia_encoded",
+    "categoria_perecedero",
 ]
 TARGET = "comportamiento"
 FEATURES_REZAGO = ["precio_t2", "variacion_t2_t1", "promedio_movil_2q", "promedio_movil_3q"]
+
+# Modelos que necesitan features escaladas (sensibles a la magnitud de las variables)
+MODELOS_QUE_NECESITAN_ESCALADO = {"Logistic Regression", "SVM"}
 
 
 def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia=None):
@@ -31,6 +36,15 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
     """
     # 1. Limpieza de filas sin rezago suficiente (NaN)
     filas_antes = len(df_final)
+
+    # Si la columna categoria_perecedero no existe todavía (no se ha actualizado preprocesamiento),
+    # se crea con 0 para no romper el pipeline, pero avisa por consola.
+    if "categoria_perecedero" not in df_final.columns:
+        print("[AVISO] 'categoria_perecedero' no está en el dataset. "
+              "Actualiza preprocesamiento.ipynb. Se usará 0 para todos los registros.")
+        df_final = df_final.copy()
+        df_final["categoria_perecedero"] = 0
+
     df_limpio = df_final.dropna(subset=FEATURES_REZAGO).copy()
     filas_despues = len(df_limpio)
     filas_eliminadas = filas_antes - filas_despues
@@ -45,14 +59,14 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
     # 3. TimeSeriesSplit (5 folds)
     tscv = TimeSeriesSplit(n_splits=5)
 
-    # 4. Configuración de modelos (SE AÑADE class_weight='balanced' A LOS SOPORTADOS)
+    # 4. Configuración de modelos (los 6 propuestos en la Tarea 4)
     modelos_config = {
-        "Random Forest": RandomForestClassifier(n_estimators=200, max_depth=10, random_state=42, n_jobs=-1, class_weight='balanced'),
-        "XGBoost": XGBClassifier(learning_rate=0.05, tree_method="hist", random_state=42, eval_metric="mlogloss", n_jobs=-1),
-        "Decision Tree": DecisionTreeClassifier(max_depth=5, min_samples_split=5, random_state=42, class_weight='balanced'),
-        "Logistic Regression": LogisticRegression(C=1.0, solver="lbfgs", max_iter=1000, random_state=42, class_weight='balanced'),
+        "Random Forest": RandomForestClassifier(n_estimators=200, max_depth=10, random_state=42, n_jobs=-1, class_weight="balanced"),
+        "XGBoost": XGBClassifier(learning_rate=0.05, max_depth=10, n_estimators=200, tree_method="hist", random_state=42, eval_metric="mlogloss", n_jobs=-1),
+        "Decision Tree": DecisionTreeClassifier(max_depth=5, min_samples_split=5, random_state=42, class_weight="balanced"),
+        "Logistic Regression": LogisticRegression(C=1.0, solver="lbfgs", max_iter=1000, random_state=42, class_weight="balanced"),
         "KNN": KNeighborsClassifier(n_neighbors=5, weights="distance"),
-        "SVM": SVC(C=1.0, kernel="rbf", random_state=42, probability=True, class_weight='balanced'),
+        "SVM": SVC(C=1.0, kernel="rbf", random_state=42, class_weight="balanced", probability=True),
     }
 
     resultados = {}
@@ -62,21 +76,31 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
         fold_metrics = []
         fold_matrices = []
         ultimo_modelo = None
+        scaler_usado = None  # se guarda el scaler si el modelo lo necesitó
 
         for fold, (train_idx, test_idx) in enumerate(tscv.split(X)):
             X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
             y_train, y_test = y_encoded[train_idx], y_encoded[test_idx]
 
-            modelo = clone(modelo_base)
-            
-            # INYECCIÓN DE PESOS: Se calculan dinámicamente para XGBoost
-            if nombre == 'XGBoost':
-                pesos_train = compute_sample_weight('balanced', y_train)
-                modelo.fit(X_train, y_train, sample_weight=pesos_train)
+            # Escalado solo para modelos sensibles a la magnitud (LR, SVM)
+            if nombre in MODELOS_QUE_NECESITAN_ESCALADO:
+                scaler = StandardScaler()
+                X_train_fit = scaler.fit_transform(X_train)
+                X_test_fit = scaler.transform(X_test)
+                scaler_usado = scaler
             else:
-                modelo.fit(X_train, y_train)
+                X_train_fit = X_train
+                X_test_fit = X_test
 
-            y_pred = modelo.predict(X_test)
+            modelo = clone(modelo_base)
+
+            if nombre == "XGBoost":
+                pesos_train = compute_sample_weight("balanced", y_train)
+                modelo.fit(X_train_fit, y_train, sample_weight=pesos_train)
+            else:
+                modelo.fit(X_train_fit, y_train)
+
+            y_pred = modelo.predict(X_test_fit)
 
             acc = accuracy_score(y_test, y_pred)
             f1 = f1_score(y_test, y_pred, average="macro", zero_division=0)
@@ -104,6 +128,7 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
             "metricas_por_fold": metrics_df,
             "matriz_confusion": cm_ultimo,
             "modelo_entrenado": ultimo_modelo,
+            "scaler": scaler_usado,  # None si no aplicó escalado
             "feature_importances": feat_imp,
             "cumple": cumple,
             "falsos": falsos,
@@ -130,6 +155,7 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
 
     mejor_nombre = mejor["Modelo"]
     mejor_modelo = resultados[mejor_nombre]["modelo_entrenado"]
+    mejor_scaler = resultados[mejor_nombre]["scaler"]
 
     # Guardar artefactos
     models_dir = os.path.join(os.path.dirname(__file__), "data", "models")
@@ -137,6 +163,8 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
 
     joblib.dump(mejor_modelo, os.path.join(models_dir, "mejor_modelo.pkl"))
     joblib.dump(le_target, os.path.join(models_dir, "le_target.pkl"))
+    if mejor_scaler is not None:
+        joblib.dump(mejor_scaler, os.path.join(models_dir, "scaler.pkl"))
     if le_producto is not None:
         joblib.dump(le_producto, os.path.join(models_dir, "le_producto.pkl"))
     if le_provincia is not None:
