@@ -12,11 +12,13 @@ from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, confusion_matrix
 from sklearn.preprocessing import LabelEncoder
 from sklearn.base import clone
+from sklearn.utils.class_weight import compute_sample_weight
 
 FEATURES = [
-    "precio_t1", "precio_t2", "variacion_t2_t1",
-    "promedio_movil_2q", "promedio_movil_3q",
-    "mes", "producto_encoded", "provincia_encoded"
+    "variacion_t2_t1", 
+    "mes", 
+    "producto_encoded", 
+    "provincia_encoded"
 ]
 TARGET = "comportamiento"
 FEATURES_REZAGO = ["precio_t2", "variacion_t2_t1", "promedio_movil_2q", "promedio_movil_3q"]
@@ -43,14 +45,14 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
     # 3. TimeSeriesSplit (5 folds)
     tscv = TimeSeriesSplit(n_splits=5)
 
-    # 4. Configuración de modelos (Random Forest y XGBoost)
+    # 4. Configuración de modelos (SE AÑADE class_weight='balanced' A LOS SOPORTADOS)
     modelos_config = {
-        "Random Forest": RandomForestClassifier(n_estimators=200, max_depth=10, random_state=42, n_jobs=-1),
+        "Random Forest": RandomForestClassifier(n_estimators=200, max_depth=10, random_state=42, n_jobs=-1, class_weight='balanced'),
         "XGBoost": XGBClassifier(learning_rate=0.05, tree_method="hist", random_state=42, eval_metric="mlogloss", n_jobs=-1),
-        "Decision Tree": DecisionTreeClassifier(max_depth=5, min_samples_split=5, random_state=42),
-        "Logistic Regression": LogisticRegression(C=1.0, solver="lbfgs", max_iter=1000, random_state=42),
+        "Decision Tree": DecisionTreeClassifier(max_depth=5, min_samples_split=5, random_state=42, class_weight='balanced'),
+        "Logistic Regression": LogisticRegression(C=1.0, solver="lbfgs", max_iter=1000, random_state=42, class_weight='balanced'),
         "KNN": KNeighborsClassifier(n_neighbors=5, weights="distance"),
-        "SVM": SVC(C=1.0, kernel="rbf", random_state=42, probability=True),
+        "SVM": SVC(C=1.0, kernel="rbf", random_state=42, probability=True, class_weight='balanced'),
     }
 
     resultados = {}
@@ -66,7 +68,14 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
             y_train, y_test = y_encoded[train_idx], y_encoded[test_idx]
 
             modelo = clone(modelo_base)
-            modelo.fit(X_train, y_train)
+            
+            # INYECCIÓN DE PESOS: Se calculan dinámicamente para XGBoost
+            if nombre == 'XGBoost':
+                pesos_train = compute_sample_weight('balanced', y_train)
+                modelo.fit(X_train, y_train, sample_weight=pesos_train)
+            else:
+                modelo.fit(X_train, y_train)
+
             y_pred = modelo.predict(X_test)
 
             acc = accuracy_score(y_test, y_pred)

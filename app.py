@@ -124,41 +124,70 @@ def main():
     # PESTAÑA 1: EXTRACCIÓN Y PREPROCESAMIENTO
     # =========================================================================
     with tab1:
-        st.header("1. Subir boletín PDF")
-        uploaded_file = st.file_uploader("Seleccione un archivo PDF de boletín SIPA", type=["pdf"], key="uploader_pdf")
+        st.header("1. Subir boletines PDF")
+        
+        # CAMBIO 1: accept_multiple_files=True habilitado
+        uploaded_files = st.file_uploader("Seleccione los archivos PDF de boletines SIPA", type=["pdf"], accept_multiple_files=True, key="uploader_pdf")
 
-        if uploaded_file is not None:
+        if uploaded_files: # Si la lista de archivos no está vacía
             st.divider()
 
-            if st.button("Procesar boletín", type="primary", use_container_width=True, key="btn_procesar_pdf"):
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                    tmp.write(uploaded_file.read())
-                    tmp_path = tmp.name
+            if st.button(f"Procesar {len(uploaded_files)} boletines en lote", type="primary", use_container_width=True, key="btn_procesar_pdf"):
+                
+                # Listas para acumular los datos de todos los PDFs
+                todos_los_registros = []
+                todos_los_encabezados_fallidos = []
+                
+                # Elementos visuales de progreso
+                barra_progreso = st.progress(0)
+                texto_progreso = st.empty()
 
-                with st.spinner("Procesando boletín con OCR... Esto puede tardar varios minutos."):
-                    try:
-                        registros, encabezados_fallidos = procesar_boletin(tmp_path)
+                with st.spinner("Procesando boletines con OCR... Esto puede tardar varios minutos."):
+                    # CAMBIO 2: Bucle para procesar cada PDF subido
+                    for i, file in enumerate(uploaded_files):
+                        texto_progreso.text(f"Extrayendo datos de: {file.name} ({i+1}/{len(uploaded_files)})")
+                        
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                            tmp.write(file.read())
+                            tmp_path = tmp.name
 
-                        if registros:
-                            df = pd.DataFrame(registros)
-                            reporte = validar_calidad(df, encabezados_fallidos)
+                        try:
+                            # Llama a procesar_boletin por cada archivo
+                            registros, encabezados = procesar_boletin(tmp_path)
+                            
+                            if registros:
+                                todos_los_registros.extend(registros) # Acumula las filas
+                            if encabezados:
+                                todos_los_encabezados_fallidos.extend(encabezados) # Acumula los errores
+                                
+                        except Exception as e:
+                            st.error(f"Error procesando {file.name}: {e}")
+                        finally:
+                            os.unlink(tmp_path)
+                            
+                        # Actualizar barra
+                        barra_progreso.progress((i + 1) / len(uploaded_files))
 
-                            if "orden" in df.columns:
-                                df = df.sort_values("orden").drop(columns=["orden"])
+                    texto_progreso.text("¡Extracción de todos los documentos finalizada! Consolidando dataset...")
 
-                            st.session_state["df"] = df
-                            st.session_state["reporte"] = reporte
-                            st.session_state["filename"] = uploaded_file.name
+                    # CAMBIO 3: Crear el DataFrame unificado y evaluarlo
+                    if todos_los_registros:
+                        df = pd.DataFrame(todos_los_registros)
+                        reporte = validar_calidad(df, todos_los_encabezados_fallidos)
 
-                            # Autoguardado dataset crudo
-                            csv_crudo_path = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_crudo_sipa.csv")
-                            os.makedirs(os.path.dirname(csv_crudo_path), exist_ok=True)
-                            df.to_csv(csv_crudo_path, index=False, encoding="utf-8-sig")
+                        if "orden" in df.columns:
+                            df = df.sort_values("orden").drop(columns=["orden"])
 
-                    except Exception as e:
-                        st.error(f"Error: {e}")
-                    finally:
-                        os.unlink(tmp_path)
+                        st.session_state["df"] = df
+                        st.session_state["reporte"] = reporte
+                        st.session_state["filename"] = f"Lote de {len(uploaded_files)} archivos"
+
+                        # Autoguardado dataset crudo consolidado
+                        csv_crudo_path = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_crudo_sipa.csv")
+                        os.makedirs(os.path.dirname(csv_crudo_path), exist_ok=True)
+                        df.to_csv(csv_crudo_path, index=False, encoding="utf-8-sig")
+                    else:
+                        st.error("No se extrajo ningún registro válido de los archivos subidos.")
 
         if "df" in st.session_state:
             df = st.session_state["df"]
