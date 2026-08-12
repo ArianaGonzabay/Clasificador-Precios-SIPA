@@ -17,13 +17,13 @@ from sklearn.base import clone
 # FEATURES restauradas: se vuelve a incluir precio_t1, precio_t2 y promedios móviles,
 # y se agrega categoria_perecedero (requiere el cambio en preprocesamiento.ipynb)
 FEATURES = [
-    "precio_t1", "precio_t2", "variacion_t2_t1",
-    "promedio_movil_2q", "promedio_movil_3q",
+    "variacion_t2_t1",
+    "distancia_pm2_pct", "distancia_pm3_pct",
     "mes", "producto_encoded", "provincia_encoded",
     "categoria_perecedero",
 ]
 TARGET = "comportamiento"
-FEATURES_REZAGO = ["precio_t2", "variacion_t2_t1", "promedio_movil_2q", "promedio_movil_3q"]
+FEATURES_REZAGO = ["variacion_t2_t1", "distancia_pm2_pct", "distancia_pm3_pct"]
 
 # Modelos que necesitan features escaladas (sensibles a la magnitud de las variables)
 MODELOS_QUE_NECESITAN_ESCALADO = {"Logistic Regression", "SVM"}
@@ -60,13 +60,31 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
     tscv = TimeSeriesSplit(n_splits=5)
 
     # 4. Configuración de modelos (los 6 propuestos en la Tarea 4)
+    # 4. Configuración de modelos (Regularizados para evitar el sobreajuste)
     modelos_config = {
-        "Random Forest": RandomForestClassifier(n_estimators=200, max_depth=10, random_state=42, n_jobs=-1, class_weight="balanced"),
-        "XGBoost": XGBClassifier(learning_rate=0.05, max_depth=10, n_estimators=200, tree_method="hist", random_state=42, eval_metric="mlogloss", n_jobs=-1),
-        "Decision Tree": DecisionTreeClassifier(max_depth=5, min_samples_split=5, random_state=42, class_weight="balanced"),
-        "Logistic Regression": LogisticRegression(C=1.0, solver="lbfgs", max_iter=1000, random_state=42, class_weight="balanced"),
-        "KNN": KNeighborsClassifier(n_neighbors=5, weights="distance"),
-        "SVM": SVC(C=1.0, kernel="rbf", random_state=42, class_weight="balanced", probability=True),
+        "Random Forest": RandomForestClassifier(
+            n_estimators=150, 
+            max_depth=5,              # Reducido de 10 a 5 para evitar memorización
+            min_samples_split=15,     # Requiere más datos para crear una rama nueva
+            random_state=42, 
+            n_jobs=-1, 
+            class_weight="balanced"
+        ),
+        "XGBoost": XGBClassifier(
+            learning_rate=0.02,       # Aprendizaje más lento y cuidadoso
+            max_depth=4,              # Reducido drásticamente de 10 a 4
+            n_estimators=300, 
+            subsample=0.8,            # Usa solo el 80% de los datos por árbol (evita ruido)
+            colsample_bytree=0.8,     # Usa solo el 80% de las columnas por árbol
+            tree_method="hist", 
+            random_state=42, 
+            eval_metric="mlogloss", 
+            n_jobs=-1
+        ),
+        "Decision Tree": DecisionTreeClassifier(max_depth=4, min_samples_split=10, random_state=42, class_weight="balanced"),
+        "Logistic Regression": LogisticRegression(C=0.5, solver="lbfgs", max_iter=1000, random_state=42, class_weight="balanced"),
+        "KNN": KNeighborsClassifier(n_neighbors=9, weights="distance"), # Aumentamos vecinos para suavizar predicción
+        "SVM": SVC(C=0.8, kernel="rbf", random_state=42, class_weight="balanced", probability=True),
     }
 
     resultados = {}
