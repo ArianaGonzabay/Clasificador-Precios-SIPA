@@ -17,7 +17,7 @@ from prediccion_utils import cargar_modelo_y_artefactos, predecir_registro, pred
 
 st.set_page_config(
     page_title="Clasificador Precios SIPA",
-    page_icon="",
+    page_icon="S",
     layout="wide",
 )
 CSS_TEMA = """
@@ -176,7 +176,10 @@ def load_preprocesamiento(notebook_fingerprint):
                 line for line in cell.source.splitlines()
                 if not line.strip().startswith(("%", "!"))
             )
-            exec(clean_source, namespace)
+            try:
+                exec(clean_source, namespace)
+            except Exception:
+                pass
 
     return namespace["preprocesar_datos"], namespace["obtener_resumen"]
 
@@ -227,7 +230,7 @@ def cargar_dataset_preprocesado():
 def main():
     ENCABEZADO_HTML = """
     <div class="encabezado-sipa">
-        <h1>🌽 Clasificador de Precios Mayoristas SIPA</h1>
+        <h1>Clasificador de Precios Mayoristas SIPA</h1>
         <p>Predicción del comportamiento de precios agrícolas en Ecuador mediante
         aprendizaje automático supervisado — Random Forest, XGBoost, Decision Tree,
         Logistic Regression, KNN y SVM</p>
@@ -238,27 +241,27 @@ def main():
 
     # Pestañas principales
     tab1, tab2, tab3 = st.tabs([
-        "📥 1. Extracción y Preprocesamiento",
-        "🤖 2. Entrenamiento de Modelos",
-        "📈 3. Predicción de Precios",
+        "1. Extracción y Preprocesamiento",
+        "2. Entrenamiento de Modelos",
+        "3. Predicción de Precios",
     ])
 
     with st.sidebar:
-        st.markdown("### 🌾 Proyecto")
+        st.markdown("### Proyecto")
         st.caption("Grupo 4 · Inteligencia Artificial · ESPOL")
         st.markdown("---")
     
-        st.markdown("### 📋 Estado del pipeline")
+        st.markdown("### Estado del pipeline")
         estado_df = "df" in st.session_state
         estado_preproc = "resultado_preprocesamiento" in st.session_state
         estado_modelo = "res_entrenamiento" in st.session_state
     
-        st.markdown(f"{'✅' if estado_df else '⬜'} Boletines extraídos")
-        st.markdown(f"{'✅' if estado_preproc else '⬜'} Datos preprocesados")
-        st.markdown(f"{'✅' if estado_modelo else '⬜'} Modelo entrenado")
+        st.markdown(f"{'OK' if estado_df else '--'} Boletines extraídos")
+        st.markdown(f"{'OK' if estado_preproc else '--'} Datos preprocesados")
+        st.markdown(f"{'OK' if estado_modelo else '--'} Modelo entrenado")
     
         st.markdown("---")
-        st.markdown("### ℹ️ Sobre el proyecto")
+        st.markdown("### Sobre el proyecto")
         st.caption(
             "Clasifica el comportamiento futuro de precios mayoristas agrícolas "
             "(Alza / Estable / Caída) a partir de boletines quincenales del SIPA."
@@ -326,9 +329,24 @@ def main():
                         st.session_state["reporte"] = reporte
                         st.session_state["filename"] = f"Lote de {len(uploaded_files)} archivos"
 
-                        # Autoguardado dataset crudo consolidado
+                        # Autoguardado dataset crudo consolidado (concatenar con existente)
                         csv_crudo_path = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_crudo_sipa.csv")
                         os.makedirs(os.path.dirname(csv_crudo_path), exist_ok=True)
+
+                        if os.path.exists(csv_crudo_path):
+                            df_existente = pd.read_csv(csv_crudo_path, encoding="utf-8-sig")
+                            df = pd.concat([df_existente, df], ignore_index=True)
+                            n_antes = len(df)
+
+                            cols_dedup = [c for c in ["producto_raw", "provincia", "quincena_id"] if c in df.columns]
+                            if cols_dedup:
+                                df = df.drop_duplicates(subset=cols_dedup, keep="last").reset_index(drop=True)
+
+                            n_duplicados = n_antes - len(df)
+                            if n_duplicados > 0:
+                                st.info(f"Se eliminaron {n_duplicados} registros duplicados del dataset consolidado.")
+                            st.success(f"Dataset consolidado: {len(df)} registros totales (datos anteriores conservados).")
+
                         df.to_csv(csv_crudo_path, index=False, encoding="utf-8-sig")
                     else:
                         st.error("No se extrajo ningún registro válido de los archivos subidos.")
@@ -421,8 +439,15 @@ def main():
                 csv_path = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_crudo_sipa.csv")
                 if st.button("Guardar CSV crudo", type="secondary", key="btn_save_crudo"):
                     os.makedirs(os.path.dirname(csv_path), exist_ok=True)
-                    df.to_csv(csv_path, index=False, encoding="utf-8-sig")
-                    st.success(f"Guardado: {csv_path}")
+                    dfGuardar = df.copy()
+                    if os.path.exists(csv_path):
+                        dfExistente = pd.read_csv(csv_path, encoding="utf-8-sig")
+                        dfGuardar = pd.concat([dfExistente, dfGuardar], ignore_index=True)
+                        cols_dedup = [c for c in ["producto_raw", "provincia", "quincena_id"] if c in dfGuardar.columns]
+                        if cols_dedup:
+                            dfGuardar = dfGuardar.drop_duplicates(subset=cols_dedup, keep="last").reset_index(drop=True)
+                    dfGuardar.to_csv(csv_path, index=False, encoding="utf-8-sig")
+                    st.success(f"Guardado: {csv_path} ({len(dfGuardar)} registros totales)")
 
             with col_download:
                 csv_bytes = df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
@@ -451,10 +476,26 @@ def main():
                             resultado = preprocesar_datos(df)
                             st.session_state["resultado_preprocesamiento"] = resultado
 
-                            # Autoguardado del dataset preprocesado en disco
+                            # Autoguardado del dataset preprocesado en disco (concatenar con existente)
                             csv_preproc_path = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_preprocesado_sipa.csv")
                             os.makedirs(os.path.dirname(csv_preproc_path), exist_ok=True)
-                            resultado["dataset_final"].to_csv(csv_preproc_path, index=False, encoding="utf-8-sig")
+
+                            df_nuevo_preproc = resultado["dataset_final"]
+                            if os.path.exists(csv_preproc_path):
+                                df_existente_preproc = pd.read_csv(csv_preproc_path, encoding="utf-8-sig")
+                                df_nuevo_preproc = pd.concat([df_existente_preproc, df_nuevo_preproc], ignore_index=True)
+                                n_antes = len(df_nuevo_preproc)
+
+                                cols_dedup = [c for c in ["producto", "provincia", "periodo"] if c in df_nuevo_preproc.columns]
+                                if cols_dedup:
+                                    df_nuevo_preproc = df_nuevo_preproc.drop_duplicates(subset=cols_dedup, keep="last").reset_index(drop=True)
+
+                                n_duplicados = n_antes - len(df_nuevo_preproc)
+                                if n_duplicados > 0:
+                                    st.info(f"Se eliminaron {n_duplicados} registros duplicados del dataset preprocesado.")
+                                st.success(f"Dataset preprocesado consolidado: {len(df_nuevo_preproc)} registros totales.")
+
+                            df_nuevo_preproc.to_csv(csv_preproc_path, index=False, encoding="utf-8-sig")
 
                             st.success("Preprocesamiento completado exitosamente y guardado en disco")
                     except Exception as e:
@@ -486,8 +527,15 @@ def main():
                     csv_path2 = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_preprocesado_sipa.csv")
                     if st.button("Guardar CSV preprocesado", type="secondary", key="btn_save_preproc"):
                         os.makedirs(os.path.dirname(csv_path2), exist_ok=True)
-                        df_modelo.to_csv(csv_path2, index=False, encoding="utf-8-sig")
-                        st.success(f"Guardado: {csv_path2}")
+                        dfGuardar2 = df_modelo.copy()
+                        if os.path.exists(csv_path2):
+                            dfExistente2 = pd.read_csv(csv_path2, encoding="utf-8-sig")
+                            dfGuardar2 = pd.concat([dfExistente2, dfGuardar2], ignore_index=True)
+                            cols_dedup2 = [c for c in ["producto", "provincia", "periodo"] if c in dfGuardar2.columns]
+                            if cols_dedup2:
+                                dfGuardar2 = dfGuardar2.drop_duplicates(subset=cols_dedup2, keep="last").reset_index(drop=True)
+                        dfGuardar2.to_csv(csv_path2, index=False, encoding="utf-8-sig")
+                        st.success(f"Guardado: {csv_path2} ({len(dfGuardar2)} registros totales)")
 
                 with col_download2:
                     csv_bytes2 = df_modelo.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
@@ -504,8 +552,8 @@ def main():
     # PESTAÑA 2: ENTRENAMIENTO DE MODELOS
     # =========================================================================
     with tab2:
-        st.header("Entrenamiento y Evaluación de Modelos (Fase 2)")
-        st.markdown("Entrenar y evaluar modelos de clasificación (**Random Forest** y **XGBoost**) utilizando división temporal (`TimeSeriesSplit` con 5 folds).")
+        st.header("Entrenamiento y Evaluación de Modelos")
+        st.markdown("Entrenar y evaluar modelos de clasificación (**Random Forest**, **XGBoost**, **Decision Tree**, **Logistic Regression**, **KNN** y **SVM**).")
 
         df_preproc_disponible = cargar_dataset_preprocesado()
 
@@ -547,7 +595,7 @@ def main():
     # PESTAÑA 3: PREDICCIÓN DE PRECIOS
     # =========================================================================
     with tab3:
-        st.header("Clasificación y Predicción de Precios (Fase 3)")
+        st.header("Clasificación y Predicción de Precios")
         st.markdown("Realizar clasificaciones del comportamiento del precio (*Alza*, *Estable*, *Caída*) utilizando el modelo entrenado guardado.")
 
         modelo, le_target, le_prod, le_prov, features = cargar_modelo_y_artefactos()
@@ -595,7 +643,8 @@ def main():
                             pred_label, probs, inputs_derived = predecir_registro(
                                 val_pt1, val_pt2, val_mes,
                                 sel_producto, sel_provincia,
-                                le_prod, le_prov, le_target, modelo, features
+                                le_prod, le_prov, le_target, modelo, features,
+                                categoria_perecedero=int(rec.get("categoria_perecedero", 0)) if pd.notna(rec.get("categoria_perecedero")) else 0
                             )
 
                             st.divider()
@@ -607,7 +656,6 @@ def main():
                                     st.markdown('''
                                     <div style="background:#5c1a1a;border-left:5px solid #e63946;
                                                 padding:1rem 1.2rem;border-radius:10px;">
-                                        <span style="font-size:1.6rem;">📈</span>
                                         <b style="color:#ffb3ba;font-size:1.1rem;"> ALZA</b><br>
                                         <span style="color:#f1c0c0;">Pronóstico de incremento de precio &gt; +3%</span>
                                     </div>''', unsafe_allow_html=True)
@@ -615,7 +663,6 @@ def main():
                                     st.markdown('''
                                     <div style="background:#1b4332;border-left:5px solid #52b788;
                                                 padding:1rem 1.2rem;border-radius:10px;">
-                                        <span style="font-size:1.6rem;">📉</span>
                                         <b style="color:#b7e4c7;font-size:1.1rem;"> CAÍDA</b><br>
                                         <span style="color:#d8f3dc;">Pronóstico de reducción de precio &lt; -3%</span>
                                     </div>''', unsafe_allow_html=True)
@@ -623,7 +670,6 @@ def main():
                                     st.markdown('''
                                     <div style="background:#4a3b1f;border-left:5px solid #e9c46a;
                                                 padding:1rem 1.2rem;border-radius:10px;">
-                                        <span style="font-size:1.6rem;">➡️</span>
                                         <b style="color:#f4dfa8;font-size:1.1rem;"> ESTABLE</b><br>
                                         <span style="color:#f0e6c8;">El precio se mantendrá en el rango de ±3%</span>
                                     </div>''', unsafe_allow_html=True)

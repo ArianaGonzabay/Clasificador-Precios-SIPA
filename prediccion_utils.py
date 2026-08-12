@@ -56,7 +56,7 @@ def obtener_ultimo_registro(df, producto, provincia):
     return df_sub.iloc[-1].to_dict()
 
 
-def predecir_registro(precio_t1, precio_t2, mes, producto, provincia, le_prod, le_prov, le_target, modelo, features):
+def predecir_registro(precio_t1, precio_t2, mes, producto, provincia, le_prod, le_prov, le_target, modelo, features, categoria_perecedero=0):
     """
     Recibe datos de un producto y sus precios anteriores para realizar la predicción de comportamiento.
     """
@@ -76,6 +76,7 @@ def predecir_registro(precio_t1, precio_t2, mes, producto, provincia, le_prod, l
         "mes": mes,
         "producto_encoded": prod_enc,
         "provincia_encoded": prov_enc,
+        "categoria_perecedero": int(categoria_perecedero),
     }
 
     X_single = pd.DataFrame([row_dict])[features]
@@ -95,6 +96,8 @@ def predecir_dataframe(df, modelo, le_target, features):
     Clasifica un DataFrame completo que contenga las features requeridas.
     """
     df_eval = df.dropna(subset=["precio_t2", "variacion_t2_t1", "promedio_movil_2q", "promedio_movil_3q"]).copy()
+    if "categoria_perecedero" not in df_eval.columns:
+        df_eval["categoria_perecedero"] = 0
     X = df_eval[features]
 
     preds_idx = modelo.predict(X)
