@@ -16,13 +16,22 @@ from sklearn.base import clone, BaseEstimator
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import numpy as np
 
 # FEATURES actualizadas con variables informativas de series temporales reales + Lags temporales
 FEATURES = [
-    "precio_t1", "precio_t2", "variacion_t2_t1",
-    "promedio_movil_2q", "promedio_movil_3q",
-    "volatilidad_3q", "momentum",
-    "mes", "producto_encoded", "provincia_encoded",
+    "precio_t1", 
+    "variacion_t2_t1",
+    # --- CAMBIO CLAVE: De valores crudos a distancias relativas ---
+    "distancia_pm2_pct", # Qué tan lejos está el precio de su promedio de 2 quincenas
+    "distancia_pm3_pct", # Qué tan lejos está el precio de su promedio de 3 quincenas
+    # --------------------------------------------------------------
+    "volatilidad_3q", 
+    "momentum",
+    "mes_seno", 
+    "mes_coseno", 
+    "producto_encoded", 
+    "provincia_encoded", 
     "categoria_perecedero",
 ]
 TARGET = "comportamiento"
@@ -35,36 +44,57 @@ MODELOS_QUE_NECESITAN_ESCALADO = {"Logistic Regression", "SVM"}
 def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia=None):
     """
     Ejecuta la Fase 2: Ordenamiento temporal cronológico, limpieza de filas sin rezago,
-    entrenamiento de los 6 modelos con TimeSeriesSplit, cálculo de métricas y guardado del mejor modelo.
+    entrenamiento de los modelos, cálculo de métricas y guardado del mejor modelo.
     """
-    # 0. Asegurar ordenamiento estricto por periodo temporal (quincena_id)
-    if "periodo" in df_final.columns:
-        df_final = df_final.sort_values(by=["periodo", "producto", "provincia"]).reset_index(drop=True)
-    elif "quincena_id" in df_final.columns:
-        df_final = df_final.sort_values(by=["quincena_id", "producto", "provincia"]).reset_index(drop=True)
-
-    # 1. Limpieza de filas sin rezago suficiente (NaN)
-    filas_antes = len(df_final)
-
+    
+    # 1. VALIDACIÓN Y CÁLCULOS AL VUELO (Ejecutado una sola vez y de forma limpia)
     if "categoria_perecedero" not in df_final.columns:
-        print("[AVISO] 'categoria_perecedero' no está en el dataset. "
-              "Actualiza preprocesamiento.ipynb. Se usará 0 para todos los registros.")
+        print("[AVISO] 'categoria_perecedero' no está en el dataset. Usando 0.")
         df_final = df_final.copy()
         df_final["categoria_perecedero"] = 0
 
     if "volatilidad_3q" not in df_final.columns:
         df_final = df_final.copy()
-        df_final["volatilidad_3q"] = 0.0
+        df_final["volatilidad_3q"] = df_final.groupby(["producto", "provincia"])["variacion_t2_t1"].transform(lambda x: x.rolling(window=3, min_periods=1).std().fillna(0.0))
 
     if "momentum" not in df_final.columns:
         df_final = df_final.copy()
         df_final["momentum"] = 0.0
 
+    if "distancia_pm2_pct" not in df_final.columns:
+        df_final = df_final.copy()
+        df_final["distancia_pm2_pct"] = np.where(
+            df_final["promedio_movil_2q"] != 0, 
+            (df_final["precio_t1"] - df_final["promedio_movil_2q"]) / df_final["promedio_movil_2q"], 
+            0.0
+        )
+        
+    if "distancia_pm3_pct" not in df_final.columns:
+        df_final = df_final.copy()
+        df_final["distancia_pm3_pct"] = np.where(
+            df_final["promedio_movil_3q"] != 0, 
+            (df_final["precio_t1"] - df_final["promedio_movil_3q"]) / df_final["promedio_movil_3q"], 
+            0.0
+        )
+
+    # 2. ORDENAMIENTO ESTRICTO
+    if "periodo" in df_final.columns:
+        df_final = df_final.sort_values(by=["periodo", "producto", "provincia"]).reset_index(drop=True)
+    elif "quincena_id" in df_final.columns:
+        df_final = df_final.sort_values(by=["quincena_id", "producto", "provincia"]).reset_index(drop=True)
+
+    # 3. LIMPIEZA DE FILAS SIN REZAGO
+    filas_antes = len(df_final)
     df_limpio = df_final.dropna(subset=FEATURES_REZAGO).copy()
+    
+    # 4. CODIFICACIÓN CÍCLICA DEL TIEMPO
+    df_limpio["mes_seno"] = np.sin(2 * np.pi * df_limpio["mes"] / 12)
+    df_limpio["mes_coseno"] = np.cos(2 * np.pi * df_limpio["mes"] / 12)
+    
     filas_despues = len(df_limpio)
     filas_eliminadas = filas_antes - filas_despues
 
-    # Crear lags de secuencia temporal (var_lag_1 a var_lag_6)
+    # 5. CREACIÓN DE LAGS TEMPORALES
     df_limpio = df_limpio.copy()
     lags_cols = []
     for i in range(1, 7):
@@ -79,6 +109,7 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
     le_target = LabelEncoder()
     y_encoded = le_target.fit_transform(y)
 
+    # --- CLASES LSTM ---
     class LSTMRegresorModule(nn.Module):
         def __init__(self, input_dim=17, hidden_units=64):
             super().__init__()
@@ -101,16 +132,12 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
         def fit(self, X, y):
             X_arr = X.values if isinstance(X, pd.DataFrame) else np.array(X)
             X_scaled = self.scaler.fit_transform(X_arr)
-            
             y_var = X["variacion_t2_t1"].values.astype(np.float32) if isinstance(X, pd.DataFrame) else X_arr[:, 2].astype(np.float32)
-            
             X_t = torch.FloatTensor(X_scaled).unsqueeze(1)
             y_t = torch.FloatTensor(y_var).unsqueeze(1)
-            
             self.model = LSTMRegresorModule(input_dim=X_scaled.shape[1], hidden_units=64)
             criterion = nn.MSELoss()
             optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
-            
             self.model.train()
             for epoch in range(self.epochs):
                 optimizer.zero_grad()
@@ -124,14 +151,11 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
             X_arr = X.values if isinstance(X, pd.DataFrame) else np.array(X)
             X_scaled = self.scaler.transform(X_arr)
             X_t = torch.FloatTensor(X_scaled).unsqueeze(1)
-            
             self.model.eval()
             with torch.no_grad():
                 var_preds = self.model(X_t).squeeze().numpy()
-                
             if var_preds.ndim == 0:
                 var_preds = np.array([var_preds.item()])
-                
             clases = []
             for v in var_preds:
                 if v > 7.0:
@@ -142,7 +166,7 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
                     clases.append(2) # Estable
             return np.array(clases)
 
-    # 4. Configuración de modelos (los 6 propuestos + LSTM)
+    # 6. CONFIGURACIÓN DE MODELOS (Restaurada a la versión ganadora para evitar subajuste)
     modelos_config = {
         "Random Forest": RandomForestClassifier(n_estimators=500, max_depth=25, random_state=42, n_jobs=-1, class_weight="balanced"),
         "XGBoost": XGBClassifier(learning_rate=0.08, max_depth=9, n_estimators=400, subsample=0.85, colsample_bytree=0.85, random_state=42, n_jobs=-1),
@@ -153,9 +177,8 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
         "LSTM": LSTMModeloProfesor(look_back=2, epochs=30, lr=0.01),
     }
 
-    # StratifiedKFold (5 folds con muestreo proporcional por clase)
+    # 7. ENTRENAMIENTO Y EVALUACIÓN
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-
     resultados = {}
     candidatos = []
 
@@ -169,7 +192,6 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
             X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
             y_train, y_test = y_encoded[train_idx], y_encoded[test_idx]
 
-            # Escalado solo para modelos sensibles a la magnitud (LR, SVM)
             if nombre in MODELOS_QUE_NECESITAN_ESCALADO:
                 scaler = StandardScaler()
                 X_train_fit = scaler.fit_transform(X_train)
@@ -194,7 +216,6 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
                 modelo.fit(X_train_fit, y_train)
 
             y_pred = modelo.predict(X_test_fit)
-
             acc = accuracy_score(y_test, y_pred)
             f1 = f1_score(y_test, y_pred, average="macro", zero_division=0)
             prec = precision_score(y_test, y_pred, average="macro", zero_division=0)
@@ -211,17 +232,14 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
 
         falsos = cm_ultimo.sum() - np.trace(cm_ultimo)
         cumple = promedios["f1_macro"] >= 0.75 and promedios["accuracy"] >= 0.80
-
-        feat_imp = None
-        if hasattr(ultimo_modelo, "feature_importances_"):
-            feat_imp = ultimo_modelo.feature_importances_
+        feat_imp = ultimo_modelo.feature_importances_ if hasattr(ultimo_modelo, "feature_importances_") else None
 
         resultados[nombre] = {
             "metricas": promedios,
             "metricas_por_fold": metrics_df,
             "matriz_confusion": cm_ultimo,
             "modelo_entrenado": ultimo_modelo,
-            "scaler": scaler_usado,  # None si no aplicó escalado
+            "scaler": scaler_usado,
             "feature_importances": feat_imp,
             "cumple": cumple,
             "falsos": falsos,
@@ -239,7 +257,6 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
 
     tabla_comparativa = pd.DataFrame(candidatos)
 
-    # Selección del mejor modelo
     candidatos_validos = [c for c in candidatos if c["Cumple Criterios"] == "SI"]
     if candidatos_validos:
         mejor = min(candidatos_validos, key=lambda x: x["Falsos (último fold)"])
@@ -250,7 +267,7 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
     mejor_modelo = resultados[mejor_nombre]["modelo_entrenado"]
     mejor_scaler = resultados[mejor_nombre]["scaler"]
 
-    # Guardar artefactos
+    # 8. GUARDAR ARTEFACTOS
     models_dir = os.path.join(os.path.dirname(__file__), "data", "models")
     os.makedirs(models_dir, exist_ok=True)
 

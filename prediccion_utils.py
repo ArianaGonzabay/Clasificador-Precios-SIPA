@@ -69,7 +69,6 @@ def predecir_registro(precio_t1, precio_t2, mes, producto, provincia, le_prod, l
 
     row_dict = {
         "precio_t1": precio_t1,
-        "precio_t2": precio_t2,
         "variacion_t2_t1": variacion_t2_t1,
         "promedio_movil_2q": promedio_movil_2q,
         "promedio_movil_3q": promedio_movil_3q,
@@ -80,8 +79,31 @@ def predecir_registro(precio_t1, precio_t2, mes, producto, provincia, le_prod, l
         "provincia_encoded": prov_enc,
         "categoria_perecedero": int(categoria_perecedero),
     }
+    
+    # 1. Inyectar variables trigonométricas (Tiempo cíclico)
+    mes_actual = row_dict.get("mes", 1)
+    row_dict["mes_seno"] = np.sin(2 * np.pi * mes_actual / 12)
+    row_dict["mes_coseno"] = np.cos(2 * np.pi * mes_actual / 12)
 
-    X_single = pd.DataFrame([row_dict])[features]
+    # 2. Inyectar distancias relativas
+    pm2 = row_dict.get("promedio_movil_2q", 0.0)
+    pm3 = row_dict.get("promedio_movil_3q", 0.0)
+
+    row_dict["distancia_pm2_pct"] = (precio_t1 - pm2) / pm2 if pm2 != 0 else 0.0
+    row_dict["distancia_pm3_pct"] = (precio_t1 - pm3) / pm3 if pm3 != 0 else 0.0
+
+    # 3. Rellenar variables faltantes y rezagos temporales (var_lag_1 a var_lag_6)
+    row_dict.setdefault("volatilidad_3q", 0.0)
+    row_dict.setdefault("momentum", 0.0)
+    for i in range(1, 7):
+        row_dict.setdefault(f"var_lag_{i}", 0.0)
+
+    # 4. Construir el DataFrame con las features base + los lags de secuencia temporal (las 17 variables exactas)
+    lags_cols = [f"var_lag_{i}" for i in range(1, 7)]
+    full_features = features + lags_cols
+
+    X_single = pd.DataFrame([row_dict])[full_features]
+    
     pred_idx = modelo.predict(X_single)[0]
     pred_label = le_target.inverse_transform([pred_idx])[0]
 
