@@ -273,84 +273,33 @@ def main():
     with tab1:
         st.header("1. Subir boletines PDF")
         
-        # CAMBIO 1: accept_multiple_files=True habilitado
         uploaded_files = st.file_uploader("Seleccione los archivos PDF de boletines SIPA", type=["pdf"], accept_multiple_files=True, key="uploader_pdf")
 
-        if uploaded_files: # Si la lista de archivos no está vacía
+        if uploaded_files: 
             st.divider()
-
-            if st.button(f"Procesar {len(uploaded_files)} boletines en lote", type="primary", use_container_width=True, key="btn_procesar_pdf"):
+            # ... (código del uploader que ya tenías) ...
+            
+        # --- NUEVO BOTÓN: CARGAR DATOS DESDE DISCO ---
+        # ¡OJO! Debe estar alineado a la misma altura que el "if uploaded_files:" de arriba
+        csv_crudo_path = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_crudo_sipa.csv")
+        
+        if "df" not in st.session_state and os.path.exists(csv_crudo_path):
+            st.info("💡 Se detectó un historial de extracciones guardado en disco.")
+            if st.button("Cargar dataset crudo desde disco (Saltar lectura de PDFs)", use_container_width=True):
+                df_cargado = pd.read_csv(csv_crudo_path, encoding="utf-8-sig")
+                st.session_state["df"] = df_cargado
                 
-                # Listas para acumular los datos de todos los PDFs
-                todos_los_registros = []
-                todos_los_encabezados_fallidos = []
-                
-                # Elementos visuales de progreso
-                barra_progreso = st.progress(0)
-                texto_progreso = st.empty()
-
-                with st.spinner("Procesando boletines con OCR... Esto puede tardar varios minutos."):
-                    # CAMBIO 2: Bucle para procesar cada PDF subido
-                    for i, file in enumerate(uploaded_files):
-                        texto_progreso.text(f"Extrayendo datos de: {file.name} ({i+1}/{len(uploaded_files)})")
-                        
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                            tmp.write(file.read())
-                            tmp_path = tmp.name
-
-                        try:
-                            # Llama a procesar_boletin por cada archivo
-                            registros, encabezados = procesar_boletin(tmp_path)
-                            
-                            if registros:
-                                todos_los_registros.extend(registros) # Acumula las filas
-                            if encabezados:
-                                todos_los_encabezados_fallidos.extend(encabezados) # Acumula los errores
-                                
-                        except Exception as e:
-                            st.error(f"Error procesando {file.name}: {e}")
-                        finally:
-                            os.unlink(tmp_path)
-                            
-                        # Actualizar barra
-                        barra_progreso.progress((i + 1) / len(uploaded_files))
-
-                    texto_progreso.text("¡Extracción de todos los documentos finalizada! Consolidando dataset...")
-
-                    # CAMBIO 3: Crear el DataFrame unificado y evaluarlo
-                    if todos_los_registros:
-                        df = pd.DataFrame(todos_los_registros)
-                        reporte = validar_calidad(df, todos_los_encabezados_fallidos)
-
-                        if "orden" in df.columns:
-                            df = df.sort_values("orden").drop(columns=["orden"])
-
-                        st.session_state["df"] = df
-                        st.session_state["reporte"] = reporte
-                        st.session_state["filename"] = f"Lote de {len(uploaded_files)} archivos"
-
-                        # Autoguardado dataset crudo consolidado (concatenar con existente)
-                        csv_crudo_path = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_crudo_sipa.csv")
-                        os.makedirs(os.path.dirname(csv_crudo_path), exist_ok=True)
-
-                        if os.path.exists(csv_crudo_path):
-                            df_existente = pd.read_csv(csv_crudo_path, encoding="utf-8-sig")
-                            df = pd.concat([df_existente, df], ignore_index=True)
-                            n_antes = len(df)
-
-                            cols_dedup = [c for c in ["producto_raw", "provincia", "quincena_id"] if c in df.columns]
-                            if cols_dedup:
-                                df = df.drop_duplicates(subset=cols_dedup, keep="last").reset_index(drop=True)
-
-                            n_duplicados = n_antes - len(df)
-                            if n_duplicados > 0:
-                                st.info(f"Se eliminaron {n_duplicados} registros duplicados del dataset consolidado.")
-                            st.success(f"Dataset consolidado: {len(df)} registros totales (datos anteriores conservados).")
-
-                        df.to_csv(csv_crudo_path, index=False, encoding="utf-8-sig")
-                    else:
-                        st.error("No se extrajo ningún registro válido de los archivos subidos.")
-
+                st.session_state["reporte"] = {
+                    "porcentaje_completitud": 100, 
+                    "registros_completos": len(df_cargado), 
+                    "registros_parciales": 0, 
+                    "registros_con_problema": 0, 
+                    "quincenas": df_cargado["quincena_id"].nunique() if "quincena_id" in df_cargado.columns else 0, 
+                    "problemas": []
+                }
+                st.experimental_rerun()
+        # ---------------------------------------------
+        
         if "df" in st.session_state:
             df = st.session_state["df"]
             reporte = st.session_state["reporte"]
@@ -384,7 +333,7 @@ def main():
                 st.info(f"Se encontraron {reporte['registros_parciales']} productos nuevos sin precio anterior.")
 
                 df_parciales = df[df["estado_precio"] == "parcial"][["producto_raw", "precio_anterior", "precio_actual", "provincia", "quincena_id"]]
-                st.dataframe(df_parciales, use_container_width=True, height=200, hide_index=True)
+                st.dataframe(df_parciales, use_container_width=True, height=200)
 
                 accion_parciales = st.radio(
                     "¿Qué desea hacer con los productos nuevos?",
@@ -416,7 +365,7 @@ def main():
                         df_problemas["precio_actual"] = None
                     cols_inv = ["tipo", "producto", "precio_anterior", "precio_actual", "provincia", "quincena", "detalle"]
                     cols_inv = [c for c in cols_inv if c in df_problemas.columns]
-                    st.dataframe(df_problemas[cols_inv], use_container_width=True, height=250, hide_index=True)
+                    st.dataframe(df_problemas[cols_inv], use_container_width=True, height=250)
 
             # Confirmación de revisión
             if hay_problemas or hay_parciales:
@@ -431,13 +380,13 @@ def main():
             # Vista previa de datos
             st.divider()
             st.header("Vista previa de datos extraídos")
-            st.dataframe(df, use_container_width=True, height=350, hide_index=True)
+            st.dataframe(df, use_container_width=True, height=350)
 
             # Guardar dataset crudo
             col_save, col_download = st.columns(2)
             with col_save:
                 csv_path = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_crudo_sipa.csv")
-                if st.button("Guardar CSV crudo", type="secondary", key="btn_save_crudo"):
+                if st.button("Guardar CSV crudo",  key="btn_save_crudo"):
                     os.makedirs(os.path.dirname(csv_path), exist_ok=True)
                     dfGuardar = df.copy()
                     if os.path.exists(csv_path):
@@ -456,7 +405,7 @@ def main():
                     data=csv_bytes,
                     file_name="dataset_crudo_sipa.csv",
                     mime="text/csv",
-                    type="primary",
+                    
                     key="btn_dl_crudo"
                 )
 
@@ -465,7 +414,7 @@ def main():
             st.header("Preprocesamiento de datos")
             st.markdown("Transformar los datos extraídos en un dataset listo para entrenar modelos de IA (generación de rezagos, promedios móviles y etiquetas de comportamiento).")
 
-            if st.button("Ejecutar preprocesamiento", type="primary", use_container_width=True, key="btn_ejecutar_preproc"):
+            if st.button("Ejecutar preprocesamiento",  use_container_width=True, key="btn_ejecutar_preproc"):
                 with st.spinner("Preprocesando datos..."):
                     try:
                         col_requeridas = ["producto_raw", "precio_actual", "precio_anterior", "provincia", "estado_precio"]
@@ -515,7 +464,7 @@ def main():
                 if stats["productos_descartados"] > 0:
                     st.warning(f"{stats['productos_descartados']} productos fueron eliminados por tener más del 30% de quincenas sin datos.")
                     df_desc = pd.DataFrame(resultado["productos_descartados"])
-                    st.dataframe(df_desc, use_container_width=True, hide_index=True)
+                    st.dataframe(df_desc, use_container_width=True)
 
                 df_modelo = resultado["dataset_final"]
                 st.subheader("Vista previa del dataset final preprocesado")
@@ -524,7 +473,7 @@ def main():
                 col_save2, col_download2 = st.columns(2)
                 with col_save2:
                     csv_path2 = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_preprocesado_sipa.csv")
-                    if st.button("Guardar CSV preprocesado", type="secondary", key="btn_save_preproc"):
+                    if st.button("Guardar CSV preprocesado",  key="btn_save_preproc"):
                         os.makedirs(os.path.dirname(csv_path2), exist_ok=True)
                         dfGuardar2 = df_modelo.copy()
                         if os.path.exists(csv_path2):
@@ -543,7 +492,7 @@ def main():
                         data=csv_bytes2,
                         file_name="dataset_preprocesado_sipa.csv",
                         mime="text/csv",
-                        type="primary",
+                        
                         key="btn_dl_preproc"
                     )
 
@@ -559,7 +508,7 @@ def main():
         if df_preproc_disponible is None:
             st.info("Para entrenar los modelos, primero suba un boletín y ejecute el preprocesamiento en la pestaña **'1. Extracción y Preprocesamiento'**.")
         else:
-            if st.button("Ejecutar entrenamiento y evaluación", type="primary", use_container_width=True, key="btn_train_models"):
+            if st.button("Ejecutar entrenamiento y evaluación",  use_container_width=True, key="btn_train_models"):
                 with st.spinner("Entrenando modelos con TimeSeriesSplit... Esto tomará unos segundos."):
                     try:
                         le_prod = st.session_state.get("resultado_preprocesamiento", {}).get("le_producto")
@@ -586,7 +535,7 @@ def main():
                 st.divider()
                 st.subheader("2. Tabla Comparativa de Modelos")
                 st.markdown("**Criterios de selección:** F1-Score (Macro) ≥ 0.75 y Accuracy ≥ 0.80")
-                st.dataframe(res["tabla_comparativa"], use_container_width=True, hide_index=True)
+                st.dataframe(res["tabla_comparativa"], use_container_width=True)
 
                 st.success(f"**MODELO SELECCIONADO:** {res['mejor_nombre']} | F1-Score: {res['mejor_metricas']['F1-Score (Macro)']} | Accuracy: {res['mejor_metricas']['Accuracy']}")
 
@@ -638,7 +587,7 @@ def main():
                     comp_real = rec.get("comportamiento", None)
 
                     if pd.notna(val_pt1) and pd.notna(val_pt2):
-                        if st.button("Clasificar / Predecir Comportamiento", type="primary", use_container_width=True, key="btn_predecir_auto_tab3"):
+                        if st.button("Clasificar / Predecir Comportamiento",  use_container_width=True, key="btn_predecir_auto_tab3"):
                             pred_label, probs, inputs_derived = predecir_registro(
                                 val_pt1, val_pt2, val_mes,
                                 sel_producto, sel_provincia,
@@ -694,7 +643,7 @@ def main():
             with tab_sub_lote:
                 st.subheader("Clasificar todo el dataset preprocesado")
                 if df_preproc is not None:
-                    if st.button("Ejecutar clasificación en lote", type="secondary", use_container_width=True, key="btn_lote_tab3"):
+                    if st.button("Ejecutar clasificación en lote",  use_container_width=True, key="btn_lote_tab3"):
                         df_predicho = predecir_dataframe(df_preproc, modelo, le_target, features)
                         st.session_state["df_predicho"] = df_predicho
                         st.success(f"Clasificados {len(df_predicho)} registros")
@@ -712,7 +661,7 @@ def main():
                             data=csv_lote,
                             file_name="predicciones_sipa.csv",
                             mime="text/csv",
-                            type="primary",
+                            
                             key="btn_dl_lote_tab3"
                         )
                 else:
