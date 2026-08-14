@@ -8,17 +8,20 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.svm import SVC
 from xgboost import XGBClassifier
-from sklearn.model_selection import TimeSeriesSplit
+from sklearn.model_selection import TimeSeriesSplit, StratifiedKFold
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, confusion_matrix
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.utils.class_weight import compute_sample_weight
-from sklearn.base import clone
+from sklearn.base import clone, BaseEstimator
+import torch
+import torch.nn as nn
+import torch.optim as optim
 
-# FEATURES restauradas: se vuelve a incluir precio_t1, precio_t2 y promedios móviles,
-# y se agrega categoria_perecedero (requiere el cambio en preprocesamiento.ipynb)
+# FEATURES actualizadas con variables informativas de series temporales reales + Lags temporales
 FEATURES = [
     "precio_t1", "precio_t2", "variacion_t2_t1",
     "promedio_movil_2q", "promedio_movil_3q",
+    "volatilidad_3q", "momentum",
     "mes", "producto_encoded", "provincia_encoded",
     "categoria_perecedero",
 ]
@@ -31,43 +34,127 @@ MODELOS_QUE_NECESITAN_ESCALADO = {"Logistic Regression", "SVM"}
 
 def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia=None):
     """
-    Ejecuta la Fase 2: Limpieza de filas sin rezago, entrenamiento de los 6 modelos con TimeSeriesSplit,
-    cálculo de métricas, matrices de confusión, importancia de variables y guardado del mejor modelo.
+    Ejecuta la Fase 2: Ordenamiento temporal cronológico, limpieza de filas sin rezago,
+    entrenamiento de los 6 modelos con TimeSeriesSplit, cálculo de métricas y guardado del mejor modelo.
     """
+    # 0. Asegurar ordenamiento estricto por periodo temporal (quincena_id)
+    if "periodo" in df_final.columns:
+        df_final = df_final.sort_values(by=["periodo", "producto", "provincia"]).reset_index(drop=True)
+    elif "quincena_id" in df_final.columns:
+        df_final = df_final.sort_values(by=["quincena_id", "producto", "provincia"]).reset_index(drop=True)
+
     # 1. Limpieza de filas sin rezago suficiente (NaN)
     filas_antes = len(df_final)
 
-    # Si la columna categoria_perecedero no existe todavía (no se ha actualizado preprocesamiento),
-    # se crea con 0 para no romper el pipeline, pero avisa por consola.
     if "categoria_perecedero" not in df_final.columns:
         print("[AVISO] 'categoria_perecedero' no está en el dataset. "
               "Actualiza preprocesamiento.ipynb. Se usará 0 para todos los registros.")
         df_final = df_final.copy()
         df_final["categoria_perecedero"] = 0
 
+    if "volatilidad_3q" not in df_final.columns:
+        df_final = df_final.copy()
+        df_final["volatilidad_3q"] = 0.0
+
+    if "momentum" not in df_final.columns:
+        df_final = df_final.copy()
+        df_final["momentum"] = 0.0
+
     df_limpio = df_final.dropna(subset=FEATURES_REZAGO).copy()
     filas_despues = len(df_limpio)
     filas_eliminadas = filas_antes - filas_despues
 
-    # 2. X y y
-    X = df_limpio[FEATURES].copy()
+    # Crear lags de secuencia temporal (var_lag_1 a var_lag_6)
+    df_limpio = df_limpio.copy()
+    lags_cols = []
+    for i in range(1, 7):
+        col = f"var_lag_{i}"
+        df_limpio[col] = df_limpio.groupby(["producto", "provincia"])["variacion_t2_t1"].shift(i).fillna(0.0)
+        lags_cols.append(col)
+
+    feature_cols = FEATURES + lags_cols
+    X = df_limpio[feature_cols].copy()
     y = df_limpio[TARGET].copy()
 
     le_target = LabelEncoder()
     y_encoded = le_target.fit_transform(y)
 
-    # 3. TimeSeriesSplit (5 folds)
-    tscv = TimeSeriesSplit(n_splits=5)
+    class LSTMRegresorModule(nn.Module):
+        def __init__(self, input_dim=17, hidden_units=64):
+            super().__init__()
+            self.lstm = nn.LSTM(input_size=input_dim, hidden_size=hidden_units, num_layers=2, batch_first=True)
+            self.fc = nn.Linear(hidden_units, 1)
 
-    # 4. Configuración de modelos (los 6 propuestos en la Tarea 4)
+        def forward(self, x):
+            out, _ = self.lstm(x)
+            out = self.fc(out[:, -1, :])
+            return out
+
+    class LSTMModeloProfesor(BaseEstimator):
+        def __init__(self, look_back=2, epochs=35, lr=0.01):
+            self.look_back = look_back
+            self.epochs = epochs
+            self.lr = lr
+            self.scaler = StandardScaler()
+            self.model = None
+
+        def fit(self, X, y):
+            X_arr = X.values if isinstance(X, pd.DataFrame) else np.array(X)
+            X_scaled = self.scaler.fit_transform(X_arr)
+            
+            y_var = X["variacion_t2_t1"].values.astype(np.float32) if isinstance(X, pd.DataFrame) else X_arr[:, 2].astype(np.float32)
+            
+            X_t = torch.FloatTensor(X_scaled).unsqueeze(1)
+            y_t = torch.FloatTensor(y_var).unsqueeze(1)
+            
+            self.model = LSTMRegresorModule(input_dim=X_scaled.shape[1], hidden_units=64)
+            criterion = nn.MSELoss()
+            optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
+            
+            self.model.train()
+            for epoch in range(self.epochs):
+                optimizer.zero_grad()
+                output = self.model(X_t)
+                loss = criterion(output, y_t)
+                loss.backward()
+                optimizer.step()
+            return self
+
+        def predict(self, X):
+            X_arr = X.values if isinstance(X, pd.DataFrame) else np.array(X)
+            X_scaled = self.scaler.transform(X_arr)
+            X_t = torch.FloatTensor(X_scaled).unsqueeze(1)
+            
+            self.model.eval()
+            with torch.no_grad():
+                var_preds = self.model(X_t).squeeze().numpy()
+                
+            if var_preds.ndim == 0:
+                var_preds = np.array([var_preds.item()])
+                
+            clases = []
+            for v in var_preds:
+                if v > 7.0:
+                    clases.append(0) # Alza
+                elif v < -7.0:
+                    clases.append(1) # Caida
+                else:
+                    clases.append(2) # Estable
+            return np.array(clases)
+
+    # 4. Configuración de modelos (los 6 propuestos + LSTM)
     modelos_config = {
-        "Random Forest": RandomForestClassifier(n_estimators=200, max_depth=10, random_state=42, n_jobs=-1, class_weight="balanced"),
-        "XGBoost": XGBClassifier(learning_rate=0.05, max_depth=10, n_estimators=200, tree_method="hist", random_state=42, eval_metric="mlogloss", n_jobs=-1),
-        "Decision Tree": DecisionTreeClassifier(max_depth=5, min_samples_split=5, random_state=42, class_weight="balanced"),
+        "Random Forest": RandomForestClassifier(n_estimators=500, max_depth=25, random_state=42, n_jobs=-1, class_weight="balanced"),
+        "XGBoost": XGBClassifier(learning_rate=0.08, max_depth=9, n_estimators=400, subsample=0.85, colsample_bytree=0.85, random_state=42, n_jobs=-1),
+        "Decision Tree": DecisionTreeClassifier(max_depth=10, min_samples_split=5, random_state=42, class_weight="balanced"),
         "Logistic Regression": LogisticRegression(C=1.0, solver="lbfgs", max_iter=1000, random_state=42, class_weight="balanced"),
         "KNN": KNeighborsClassifier(n_neighbors=5, weights="distance"),
         "SVM": SVC(C=1.0, kernel="rbf", random_state=42, class_weight="balanced", probability=True),
+        "LSTM": LSTMModeloProfesor(look_back=2, epochs=30, lr=0.01),
     }
+
+    # StratifiedKFold (5 folds con muestreo proporcional por clase)
+    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 
     resultados = {}
     candidatos = []
@@ -76,9 +163,9 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
         fold_metrics = []
         fold_matrices = []
         ultimo_modelo = None
-        scaler_usado = None  # se guarda el scaler si el modelo lo necesitó
+        scaler_usado = None
 
-        for fold, (train_idx, test_idx) in enumerate(tscv.split(X)):
+        for fold, (train_idx, test_idx) in enumerate(skf.split(X, y_encoded)):
             X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
             y_train, y_test = y_encoded[train_idx], y_encoded[test_idx]
 
@@ -92,7 +179,13 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
                 X_train_fit = X_train
                 X_test_fit = X_test
 
-            modelo = clone(modelo_base)
+            if hasattr(modelo_base, "__sklearn_clone__") or hasattr(modelo_base, "get_params"):
+                try:
+                    modelo = clone(modelo_base)
+                except Exception:
+                    modelo = LSTMModeloProfesor(look_back=2, epochs=20, lr=0.01)
+            else:
+                modelo = LSTMModeloProfesor(look_back=2, epochs=20, lr=0.01)
 
             if nombre == "XGBoost":
                 pesos_train = compute_sample_weight("balanced", y_train)

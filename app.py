@@ -474,9 +474,6 @@ def main():
                             st.error(f"Faltan columnas requeridas: {faltantes}")
                         else:
                             resultado = preprocesar_datos(df)
-                            st.session_state["resultado_preprocesamiento"] = resultado
-
-                            # Autoguardado del dataset preprocesado en disco (concatenar con existente)
                             csv_preproc_path = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_preprocesado_sipa.csv")
                             os.makedirs(os.path.dirname(csv_preproc_path), exist_ok=True)
 
@@ -496,6 +493,8 @@ def main():
                                 st.success(f"Dataset preprocesado consolidado: {len(df_nuevo_preproc)} registros totales.")
 
                             df_nuevo_preproc.to_csv(csv_preproc_path, index=False, encoding="utf-8-sig")
+                            resultado["dataset_final"] = df_nuevo_preproc
+                            st.session_state["resultado_preprocesamiento"] = resultado
 
                             st.success("Preprocesamiento completado exitosamente y guardado en disco")
                     except Exception as e:
@@ -553,7 +552,7 @@ def main():
     # =========================================================================
     with tab2:
         st.header("Entrenamiento y Evaluación de Modelos")
-        st.markdown("Entrenar y evaluar modelos de clasificación (**Random Forest**, **XGBoost**, **Decision Tree**, **Logistic Regression**, **KNN** y **SVM**).")
+        st.markdown("Entrenar y evaluar modelos de clasificación (**Random Forest**, **XGBoost**, **Decision Tree**, **Logistic Regression**, **KNN**, **SVM** y **LSTM**).")
 
         df_preproc_disponible = cargar_dataset_preprocesado()
 

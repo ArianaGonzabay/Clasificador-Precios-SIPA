@@ -73,6 +73,8 @@ def predecir_registro(precio_t1, precio_t2, mes, producto, provincia, le_prod, l
         "variacion_t2_t1": variacion_t2_t1,
         "promedio_movil_2q": promedio_movil_2q,
         "promedio_movil_3q": promedio_movil_3q,
+        "volatilidad_3q": 0.0,
+        "momentum": 0.0,
         "mes": mes,
         "producto_encoded": prod_enc,
         "provincia_encoded": prov_enc,
