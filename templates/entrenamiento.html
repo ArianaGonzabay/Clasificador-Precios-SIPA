@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block titulo %}Entrenamiento &middot; Clasificador SIPA{% endblock %}
+{% block contenido %}
+<div class="progreso-etapas">
+  <span class="etapa"><span class="etapa-numero">1</span>Extracción</span>
+  <span class="linea"></span>
+  <span class="etapa activa"><span class="etapa-numero">2</span>Entrenamiento</span>
+  <span class="linea"></span>
+  <span class="etapa"><span class="etapa-numero">3</span>Predicción</span>
+</div>
+
+<h1>Entrenamiento y evaluación de modelos</h1>
+<p class="texto-secundario">
+  Compara Random Forest, XGBoost, Decision Tree, Logistic Regression, KNN y LSTM
+  con validación cruzada estratificada (5 folds).
+</p>
+
+<form action="{{ url_for('ejecutar_entrenamiento') }}" method="post" data-carga-mensaje="Entrenando modelos… esto puede tardar varios minutos">
+  <button type="submit" class="boton boton-primario">Ejecutar entrenamiento y evaluación</button>
+</form>
+<p class="texto-secundario texto-aviso">Esto puede tardar varios minutos: entrena 6 algoritmos con 5 folds cada uno.</p>
+
+{% if res %}
+<section class="seccion">
+  <h2>Limpieza de filas sin rezago</h2>
+  <div class="grid-metricas">
+    <div class="metrica"><span class="metrica-valor">{{ res.filas_antes }}</span><span class="metrica-etiqueta">Filas iniciales</span></div>
+    <div class="metrica"><span class="metrica-valor">{{ res.filas_eliminadas }}</span><span class="metrica-etiqueta">Eliminadas (sin rezago)</span></div>
+    <div class="metrica"><span class="metrica-valor">{{ res.filas_despues }}</span><span class="metrica-etiqueta">Disponibles para entrenar</span></div>
+  </div>
+
+  <h2>Tabla comparativa de modelos</h2>
+  <p class="texto-secundario">Criterios de selección: F1-Score (Macro) &ge; 0.70 y Accuracy &ge; 0.75</p>
+  <div class="tabla-envoltorio">
+    <table class="tabla-datos">
+      <thead>
+        <tr>{% for col in res.tabla_comparativa.columns %}<th>{{ col }}</th>{% endfor %}</tr>
+      </thead>
+      <tbody>
+        {% for _, fila in res.tabla_comparativa.iterrows() %}
+        <tr class="{{ 'fila-ganadora' if fila['Modelo'] == res.mejor_nombre else '' }}">
+          {% for col in res.tabla_comparativa.columns %}<td>{{ fila[col] }}</td>{% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="banner-resultado exito banner-cta">
+    <div>
+      <strong>Modelo seleccionado:</strong> {{ res.mejor_nombre }}
+      &middot; F1-Score: {{ res.mejor_metricas['F1-Score (Macro)'] }}
+      &middot; Accuracy: {{ res.mejor_metricas['Accuracy'] }}
+    </div>
+    <a href="{{ url_for('prediccion') }}" class="boton boton-primario">Ir a Predicción &rarr;</a>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

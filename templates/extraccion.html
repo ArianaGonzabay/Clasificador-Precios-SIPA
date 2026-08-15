@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block titulo %}Extracción &middot; Clasificador SIPA{% endblock %}
+{% block contenido %}
+<div class="progreso-etapas">
+  <span class="etapa activa"><span class="etapa-numero">1</span>Extracción</span>
+  <span class="linea"></span>
+  <span class="etapa"><span class="etapa-numero">2</span>Entrenamiento</span>
+  <span class="linea"></span>
+  <span class="etapa"><span class="etapa-numero">3</span>Predicción</span>
+</div>
+
+<h1>Subir archivos de base de datos</h1>
+
+<div class="grid-dos">
+  <div class="tarjeta">
+    <h3>Precios SIPA</h3>
+    <p class="texto-secundario">Boletín de precios mayoristas (.xlsx, .xls, .csv)</p>
+    <form action="{{ url_for('subir_precios') }}" method="post" enctype="multipart/form-data" data-carga-mensaje="Procesando archivo de precios…" data-requiere-archivo="1">
+      <label class="zona-carga">
+        <input type="file" name="archivo_precios" accept=".xlsx,.xls,.csv">
+        <span class="zona-carga-icono" aria-hidden="true">&#8593;</span>
+        <span class="zona-carga-texto" data-original="Arrastra el archivo aquí o haz clic para buscarlo">Arrastra el archivo aquí o haz clic para buscarlo</span>
+      </label>
+      <button type="submit" class="boton boton-primario">Procesar archivo de precios</button>
+    </form>
+  </div>
+
+  <div class="tarjeta">
+    <h3>Clima histórico</h3>
+    <p class="texto-secundario">Histórico climático por provincia (.xlsx, .xls, .csv)</p>
+    <form action="{{ url_for('subir_clima') }}" method="post" enctype="multipart/form-data" data-carga-mensaje="Guardando datos climáticos…" data-requiere-archivo="1">
+      <label class="zona-carga">
+        <input type="file" name="archivo_clima" accept=".xlsx,.xls,.csv">
+        <span class="zona-carga-icono" aria-hidden="true">&#8593;</span>
+        <span class="zona-carga-texto" data-original="Arrastra el archivo aquí o haz clic para buscarlo">Arrastra el archivo aquí o haz clic para buscarlo</span>
+      </label>
+      <button type="submit" class="boton boton-secundario">Guardar datos climáticos</button>
+    </form>
+  </div>
+</div>
+
+{% if df_preview is not none %}
+<section class="seccion">
+  <h2>Resultados de extracción</h2>
+  {% if reporte %}
+  <div class="grid-metricas">
+    <div class="metrica"><span class="metrica-valor">{{ reporte.registros_completos }}</span><span class="metrica-etiqueta">Registros completos</span></div>
+    <div class="metrica"><span class="metrica-valor">{{ reporte.registros_parciales }}</span><span class="metrica-etiqueta">Parciales</span></div>
+    <div class="metrica"><span class="metrica-valor">{{ reporte.quincenas }}</span><span class="metrica-etiqueta">Períodos detectados</span></div>
+  </div>
+  {% endif %}
+
+  <p class="texto-secundario">Vista previa (últimos 50 registros del histórico en disco):</p>
+  <div class="tabla-envoltorio">
+    <table class="tabla-datos">
+      <thead>
+        <tr>{% for col in df_preview.columns %}<th>{{ col }}</th>{% endfor %}</tr>
+      </thead>
+      <tbody>
+        {% for _, fila in df_preview.iterrows() %}
+        <tr>{% for col in df_preview.columns %}<td>{{ fila[col] }}</td>{% endfor %}</tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <form action="{{ url_for('ejecutar_preprocesamiento') }}" method="post" data-carga-mensaje="Preprocesando datos…">
+    <button type="submit" class="boton boton-primario">Ejecutar preprocesamiento</button>
+  </form>
+</section>
+{% endif %}
+
+{% if df_preproc_preview is not none %}
+<section class="seccion">
+  <h2>Dataset preprocesado</h2>
+  {% if stats %}
+  <div class="grid-metricas">
+    <div class="metrica"><span class="metrica-valor">{{ stats.registros_completos }}</span><span class="metrica-etiqueta">Entrada (válidos)</span></div>
+    <div class="metrica"><span class="metrica-valor">{{ stats.registros_modelo }}</span><span class="metrica-etiqueta">Salida (dataset final)</span></div>
+    <div class="metrica"><span class="metrica-valor">{{ stats.productos_descartados }}</span><span class="metrica-etiqueta">Productos descartados (&gt;30% faltante)</span></div>
+  </div>
+  {% endif %}
+
+  <p class="texto-secundario">Vista previa (últimos 50 registros):</p>
+  <div class="tabla-envoltorio">
+    <table class="tabla-datos">
+      <thead>
+        <tr>{% for col in df_preproc_preview.columns %}<th>{{ col }}</th>{% endfor %}</tr>
+      </thead>
+      <tbody>
+        {% for _, fila in df_preproc_preview.iterrows() %}
+        <tr>{% for col in df_preproc_preview.columns %}<td>{{ fila[col] }}</td>{% endfor %}</tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="banner-resultado exito banner-cta">
+    <div>
+      <strong>Dataset listo.</strong> Ya puedes entrenar los modelos con estos datos.
+    </div>
+    <a href="{{ url_for('entrenamiento') }}" class="boton boton-primario">Ir a Entrenamiento &rarr;</a>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

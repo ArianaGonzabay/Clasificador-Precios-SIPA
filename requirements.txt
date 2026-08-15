@@ -11,3 +11,11 @@ scikit-learn>=1.0.0
 tensorflow>=2.15.0
 xgboost
 torch>=2.0.0
+Flask>=3.0
+joblib>=1.3
+openpyxl>=3.1
+
+# Solo necesario si vas a usar la ruta de extracción de boletines PDF vía OCR
+# (extractor_utils.py). Si únicamente subes Excel/CSV, puedes omitir esto.
+# pdfplumber>=0.10
+# rapidocr-onnxruntime>=1.3

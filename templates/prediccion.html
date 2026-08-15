@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block titulo %}Predicción &middot; Clasificador SIPA{% endblock %}
+{% block contenido %}
+<div class="progreso-etapas">
+  <span class="etapa"><span class="etapa-numero">1</span>Extracción</span>
+  <span class="linea"></span>
+  <span class="etapa"><span class="etapa-numero">2</span>Entrenamiento</span>
+  <span class="linea"></span>
+  <span class="etapa activa"><span class="etapa-numero">3</span>Predicción</span>
+</div>
+
+<h1>Clasificación y predicción de precios</h1>
+
+{% if not modelo_listo %}
+<div class="banner-resultado info">
+  No hay un modelo entrenado todavía. Ve a <a href="{{ url_for('entrenamiento') }}">Entrenamiento</a> primero.
+</div>
+{% else %}
+
+<div class="grid-dos">
+  <div class="tarjeta">
+    <h3>Predicción por producto y provincia</h3>
+    <form action="{{ url_for('prediccion_individual') }}" method="post" data-carga-mensaje="Clasificando…">
+      <label class="campo">
+        <span>Producto</span>
+        <select name="producto" required>
+          {% for p in productos %}
+          <option value="{{ p }}" {{ 'selected' if seleccion and seleccion.producto == p else '' }}>{{ p }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="campo">
+        <span>Provincia</span>
+        <select name="provincia" required>
+          {% for p in provincias %}
+          <option value="{{ p }}" {{ 'selected' if seleccion and seleccion.provincia == p else '' }}>{{ p }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button type="submit" class="boton boton-primario">Clasificar comportamiento</button>
+    </form>
+  </div>
+
+  <div class="tarjeta">
+    <h3>Clasificación en lote</h3>
+    <p class="texto-secundario">Clasifica todo el dataset preprocesado de una sola vez.</p>
+    <form action="{{ url_for('prediccion_lote') }}" method="post" data-carga-mensaje="Clasificando todo el dataset…">
+      <button type="submit" class="boton boton-secundario">Ejecutar clasificación en lote</button>
+    </form>
+    {% if df_lote is not none %}
+    <a href="{{ url_for('descargar_lote') }}" class="boton boton-secundario boton-enlace">Descargar predicciones (CSV)</a>
+    {% endif %}
+  </div>
+</div>
+
+{% if registro %}
+<section class="seccion">
+  <h2>Datos históricos detectados</h2>
+  <div class="grid-metricas">
+    <div class="metrica"><span class="metrica-valor">{{ registro.periodo }}</span><span class="metrica-etiqueta">Período</span></div>
+    <div class="metrica"><span class="metrica-valor">{{ '$%.2f'|format(registro.precio_t1) if registro.precio_t1 == registro.precio_t1 else 'N/A' }}</span><span class="metrica-etiqueta">Precio t-1</span></div>
+    <div class="metrica"><span class="metrica-valor">{{ '$%.2f'|format(registro.precio_t2) if registro.precio_t2 == registro.precio_t2 else 'N/A' }}</span><span class="metrica-etiqueta">Precio t-2</span></div>
+    <div class="metrica"><span class="metrica-valor">{{ '$%.2f'|format(registro.precio_actual) if registro.precio_actual == registro.precio_actual else 'N/A' }}</span><span class="metrica-etiqueta">Precio boletín</span></div>
+  </div>
+</section>
+{% endif %}
+
+{% if resultado %}
+<section class="seccion">
+  <h2>Resultado de la clasificación</h2>
+  {% set clave_clase = 'caida' if resultado.clase == 'Caída' else resultado.clase|lower %}
+  <div class="tarjeta-resultado tarjeta-{{ clave_clase }}">
+    <strong>{{ resultado.clase|upper }}</strong>
+    <p>
+      {% if resultado.clase == 'Alza' %}Pronóstico de incremento de precio &gt; +3%
+      {% elif resultado.clase == 'Caída' %}Pronóstico de reducción de precio &lt; -3%
+      {% else %}El precio se mantendrá en el rango de &plusmn;3%{% endif %}
+    </p>
+  </div>
+  {% if resultado.probs %}
+  <div class="grid-metricas">
+    {% for clase, prob in resultado.probs.items() %}
+    <div class="metrica"><span class="metrica-valor">{{ prob }}%</span><span class="metrica-etiqueta">Prob. {{ clase }}</span></div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if df_lote is not none %}
+<section class="seccion">
+  <h2>Resultados de clasificación en lote</h2>
+  <p class="texto-secundario">Mostrando los primeros 200 registros clasificados.</p>
+  <div class="tabla-envoltorio">
+    <table class="tabla-datos">
+      <thead>
+        <tr>{% for col in df_lote.columns %}<th>{{ col }}</th>{% endfor %}</tr>
+      </thead>
+      <tbody>
+        {% for _, fila in df_lote.iterrows() %}
+        <tr>{% for col in df_lote.columns %}<td>{{ fila[col] }}</td>{% endfor %}</tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+{% endif %}
+{% endblock %}

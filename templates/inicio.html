@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block titulo %}Inicio &middot; Clasificador SIPA{% endblock %}
+{% block contenido %}
+<section class="hero">
+  <p class="hero-eyebrow">Aprendizaje automático supervisado</p>
+  <h1>Clasificador de precios mayoristas SIPA</h1>
+  <p class="hero-descripcion">
+    Predicción del comportamiento de precios agrícolas en Ecuador &mdash; Alza, Estable o Caída &mdash;
+    a partir de los boletines quincenales del Sistema de Información Pública Agropecuaria,
+    usando Random Forest, XGBoost, Decision Tree, Logistic Regression, KNN y LSTM.
+  </p>
+</section>
+
+<section class="grid-pasos">
+  <a href="{{ url_for('extraccion') }}" class="tarjeta-paso">
+    <span class="numero-paso">01</span>
+    <h2>Extracción y preprocesamiento</h2>
+    <p>Sube el boletín de precios y el histórico climático, y prepara el dataset para el modelo.</p>
+    <span class="estado-pill {{ 'completado' if estado.preprocesado else ('parcial' if estado.extraido else '') }}">
+      {% if estado.preprocesado %}Completado{% elif estado.extraido %}Falta preprocesar{% else %}Pendiente{% endif %}
+    </span>
+  </a>
+
+  <a href="{{ url_for('entrenamiento') }}" class="tarjeta-paso">
+    <span class="numero-paso">02</span>
+    <h2>Entrenamiento de modelos</h2>
+    <p>Compara Random Forest, XGBoost, Decision Tree, Logistic Regression, KNN y LSTM.</p>
+    <span class="estado-pill {{ 'completado' if estado.entrenado else '' }}">
+      {{ 'Completado' if estado.entrenado else 'Pendiente' }}
+    </span>
+  </a>
+
+  <a href="{{ url_for('prediccion') }}" class="tarjeta-paso">
+    <span class="numero-paso">03</span>
+    <h2>Predicción de precios</h2>
+    <p>Clasifica el comportamiento futuro de un producto puntual o de todo el dataset.</p>
+    <span class="estado-pill {{ 'completado' if estado.entrenado else '' }}">
+      {{ 'Disponible' if estado.entrenado else 'Requiere modelo entrenado' }}
+    </span>
+  </a>
+</section>
+{% endblock %}

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block titulo %}Clasificador de Precios SIPA{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <header class="barra-superior">
+    <div class="marca">
+      <span class="marca-icono" aria-hidden="true">&#127806;</span>
+      <div>
+        <p class="marca-titulo">SIPA &middot; Clasificador</p>
+        <p class="marca-subtitulo">Grupo 4 &middot; Inteligencia Artificial &middot; ESPOL</p>
+      </div>
+    </div>
+    <nav class="nav-principal">
+      <a href="{{ url_for('inicio') }}" class="{{ 'activo' if request.endpoint == 'inicio' else '' }}">Inicio</a>
+      <a href="{{ url_for('extraccion') }}" class="{{ 'activo' if request.endpoint == 'extraccion' else '' }}">
+        Extracción
+        <span class="punto-estado {{ 'listo' if estado.preprocesado else ('parcial' if estado.extraido else '') }}"></span>
+      </a>
+      <a href="{{ url_for('entrenamiento') }}" class="{{ 'activo' if request.endpoint == 'entrenamiento' else '' }}">
+        Entrenamiento
+        <span class="punto-estado {{ 'listo' if estado.entrenado else '' }}"></span>
+      </a>
+      <a href="{{ url_for('prediccion') }}" class="{{ 'activo' if request.endpoint and request.endpoint.startswith('prediccion') else '' }}">
+        Predicción
+        <span class="punto-estado {{ 'listo' if estado.entrenado else '' }}"></span>
+      </a>
+    </nav>
+  </header>
+
+  <main class="contenedor-principal">
+    {% with mensajes = get_flashed_messages(with_categories=true) %}
+      {% if mensajes %}
+        <div class="pila-alertas">
+          {% for categoria, mensaje in mensajes %}
+            <div class="alerta alerta-{{ categoria }}">{{ mensaje }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    {% block contenido %}{% endblock %}
+  </main>
+
+  <footer class="pie-pagina">
+    <p>Sistema de Información Pública Agropecuaria (SIPA) &middot; Predicción de precios mayoristas agrícolas en Ecuador</p>
+  </footer>
+
+  <div class="overlay-carga" id="overlay-carga">
+    <div class="overlay-caja">
+      <div class="overlay-spinner" aria-hidden="true"></div>
+      <p id="overlay-mensaje">Procesando&hellip;</p>
+      <p class="overlay-nota">No cierres ni recargues esta página.</p>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var overlay = document.getElementById('overlay-carga');
+      var mensaje = document.getElementById('overlay-mensaje');
+
+      // Por si el navegador restaura la página desde caché (botón atrás/adelante)
+      // con el overlay todavía marcado como visible de una navegación anterior.
+      window.addEventListener('pageshow', function () {
+        overlay.classList.remove('visible');
+      });
+
+      // Muestra el overlay de "procesando" al enviar cualquier formulario marcado.
+      document.querySelectorAll('form[data-carga-mensaje]').forEach(function (form) {
+        form.addEventListener('submit', function (evento) {
+          if (form.dataset.requiereArchivo) {
+            var input = form.querySelector('input[type="file"]');
+            if (input && input.files.length === 0) {
+              return; // deja que la validación del servidor muestre el error
+            }
+          }
+          mensaje.textContent = form.getAttribute('data-carga-mensaje');
+          overlay.classList.add('visible');
+        });
+      });
+
+      // Muestra el nombre del archivo elegido en vez del texto por defecto.
+      document.querySelectorAll('.zona-carga input[type="file"]').forEach(function (input) {
+        input.addEventListener('change', function () {
+          var zona = input.closest('.zona-carga');
+          var texto = zona.querySelector('.zona-carga-texto');
+          var icono = zona.querySelector('.zona-carga-icono');
+          if (input.files.length > 0) {
+            texto.textContent = input.files[0].name;
+            zona.classList.add('zona-carga-lista');
+            if (icono) icono.textContent = '✓';
+          } else {
+            texto.textContent = texto.dataset.original;
+            zona.classList.remove('zona-carga-lista');
+            if (icono) icono.textContent = '↑';
+          }
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

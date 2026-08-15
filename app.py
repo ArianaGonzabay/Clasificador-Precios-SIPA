@@ -1,817 +1,348 @@
 """
-Interfaz web con Streamlit para el Clasificador de Precios SIPA.
+Clasificador de Precios Mayoristas SIPA — interfaz web sin API (Flask + Jinja2).
 
-Uso: streamlit run app.py
+Cada ruta renderiza HTML directamente en el servidor: al enviar un formulario
+(subir archivo, entrenar, predecir) el navegador recarga la página con el
+resultado ya calculado. No hay endpoints JSON ni llamadas fetch() del lado
+del cliente — es la arquitectura clásica "servidor primero".
+
+Ejecutar con:  python app.py
+Luego abrir:   http://localhost:5000
 """
 
+import io
 import os
-import tempfile
-import hashlib
-import numpy as np
+
 import pandas as pd
-import streamlit as st
-import nbformat
+from flask import Flask, flash, redirect, render_template, request, send_file, url_for
+
 from entrenamiento_utils import ejecutar_entrenamiento_y_evaluacion
-from prediccion_utils import cargar_modelo_y_artefactos, predecir_registro, predecir_dataframe, obtener_ultimo_registro
-
-
-st.set_page_config(
-    page_title="Clasificador Precios SIPA",
-    page_icon="S",
-    layout="wide",
+from ingesta_precios import procesar_archivo_precios
+from preprocesamiento import preprocesar_datos
+from prediccion_utils import (
+    cargar_modelo_y_artefactos,
+    obtener_ultimo_registro,
+    predecir_dataframe,
+    predecir_registro,
 )
-CSS_TEMA = """
-<style>
-    :root {
-        --verde-campo: #2d6a4f;
-        --verde-claro: #52b788;
-        --verde-oscuro: #1b4332;
-        --naranja-tierra: #e07a5f;
-        --fondo-app: #0f1a14;
-        --fondo-tarjeta: #16241c;
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+PROCESSED_DIR = os.path.join(DATA_DIR, "processed")
+MODELS_DIR = os.path.join(DATA_DIR, "models")
+CSV_CRUDO = os.path.join(PROCESSED_DIR, "dataset_crudo_sipa.csv")
+CSV_PREPROC = os.path.join(PROCESSED_DIR, "dataset_preprocesado_sipa.csv")
+CLIMA_PATH = os.path.join(DATA_DIR, "clima_historico.csv")
+
+os.makedirs(PROCESSED_DIR, exist_ok=True)
+os.makedirs(MODELS_DIR, exist_ok=True)
+
+app = Flask(__name__)
+app.secret_key = "sipa-clasificador-dev"  # solo se usa para los mensajes flash
+
+# Caché en memoria de resultados que no se guardan tal cual en disco
+# (tabla comparativa de modelos, dataset preprocesado recién calculado, etc.)
+# Es un único proceso de un solo usuario -- equivalente a lo que hacía
+# st.session_state en la versión de Streamlit.
+CACHE = {
+    "reporte_extraccion": None,
+    "resultado_preprocesamiento": None,
+    "res_entrenamiento": None,
+    "df_predicho": None,
+}
+
+
+def estado_pipeline():
+    return {
+        "extraido": os.path.exists(CSV_CRUDO),
+        "preprocesado": os.path.exists(CSV_PREPROC),
+        "entrenado": os.path.exists(os.path.join(MODELS_DIR, "mejor_modelo.pkl")),
     }
 
-    /* Fondo general de la app */
-    .stApp {
-        background: linear-gradient(180deg, #0f1a14 0%, #10201a 100%);
-    }
 
-    /* Fondo de la barra lateral */
-    section[data-testid="stSidebar"] {
-        background-color: #0d1712;
-        border-right: 1px solid rgba(82, 183, 136, 0.15);
-    }
-
-    /* Header principal con degradado agrícola */
-    .encabezado-sipa {
-        background: linear-gradient(120deg, #1b4332 0%, #2d6a4f 55%, #52b788 100%);
-        padding: 2rem 2.2rem;
-        border-radius: 14px;
-        margin-bottom: 1.5rem;
-        box-shadow: 0 4px 18px rgba(0,0,0,0.35);
-    }
-    .encabezado-sipa h1 {
-        color: white;
-        margin: 0;
-        font-size: 2rem;
-        font-weight: 800;
-    }
-    .encabezado-sipa p {
-        color: #d8f3dc;
-        margin: 0.4rem 0 0 0;
-        font-size: 0.95rem;
-    }
-    .encabezado-sipa .badge {
-        display: inline-block;
-        background: rgba(255,255,255,0.15);
-        color: white;
-        padding: 0.15rem 0.7rem;
-        border-radius: 20px;
-        font-size: 0.75rem;
-        margin-top: 0.6rem;
-        letter-spacing: 0.03em;
-    }
-
-    /* Tarjetas de métricas */
-    div[data-testid="stMetric"] {
-        background: var(--fondo-tarjeta);
-        border: 1px solid rgba(82, 183, 136, 0.25);
-        border-left: 4px solid var(--verde-campo);
-        border-radius: 10px;
-        padding: 0.9rem 1.1rem;
-    }
-    div[data-testid="stMetricLabel"] {
-        font-weight: 600;
-        opacity: 0.85;
-    }
-
-    /* Contenedores de dataframes y expanders con tarjeta oscura verde */
-    div[data-testid="stDataFrame"], div[data-testid="stExpander"] {
-        background: var(--fondo-tarjeta);
-        border-radius: 10px;
-        border: 1px solid rgba(82, 183, 136, 0.15);
-    }
-
-    /* Pestañas principales */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 4px;
-        border-bottom: 2px solid rgba(82, 183, 136, 0.25);
-    }
-    .stTabs [data-baseweb="tab"] {
-        border-radius: 8px 8px 0 0;
-        padding: 0.6rem 1.2rem;
-        font-weight: 600;
-        color: #b7e4c7;
-    }
-    .stTabs [aria-selected="true"] {
-        background-color: rgba(82, 183, 136, 0.12) !important;
-        color: white !important;
-    }
-
-    /* Botones primarios */
-    div.stButton > button[kind="primary"] {
-        background-color: var(--verde-campo);
-        border: none;
-        font-weight: 600;
-    }
-    div.stButton > button[kind="primary"]:hover {
-        background-color: var(--verde-claro);
-    }
-
-    /* Barra de progreso */
-    div[data-testid="stProgress"] > div > div {
-        background-color: var(--verde-claro);
-    }
-
-    /* Divisores más sutiles */
-    hr {
-        border-color: rgba(82, 183, 136, 0.2) !important;
-    }
-
-    /* Encabezados de sección (st.header / st.subheader) */
-    h1, h2, h3 {
-        color: #eaf5ee;
-    }
-</style>
-"""
-
-st.markdown(CSS_TEMA, unsafe_allow_html=True)
-
-@st.cache_resource
-def load_extractor(notebook_fingerprint):
-    notebook_path = os.path.join(os.path.dirname(__file__), "extractor.ipynb")
-    with open(notebook_path, "r", encoding="utf-8") as f:
-        notebook = nbformat.read(f, as_version=4)
-
-    namespace = {"__name__": "__main__"}
-    skip_patterns = [
-        "procesar_boletin(PDF_PATH)",
-        "df.to_csv",
-        "PDF_PATH =",
-        "CSV_PATH =",
-        "df = pd.DataFrame(registros)",
-        "df.head(",
-    ]
-    for cell in notebook.cells:
-        if cell.cell_type == "code":
-            source = cell.source
-            if any(p in source for p in skip_patterns):
-                continue
-            exec(source, namespace)
-
-    return namespace["procesar_boletin"], namespace["validar_calidad"]
+@app.context_processor
+def inyectar_estado():
+    return {"estado": estado_pipeline()}
 
 
-@st.cache_resource
-def load_preprocesamiento(notebook_fingerprint):
-    notebook_path = os.path.join(os.path.dirname(__file__), "preprocesamiento.ipynb")
-    with open(notebook_path, "r", encoding="utf-8") as f:
-        notebook = nbformat.read(f, as_version=4)
-
-    namespace = {"__name__": "__main__"}
-    for cell in notebook.cells:
-        if cell.cell_type == "code":
-            # Filtra las líneas que inician con % (mágicos) o ! (comandos de terminal)
-            clean_source = "\n".join(
-                line for line in cell.source.splitlines()
-                if not line.strip().startswith(("%", "!"))
-            )
-            try:
-                exec(clean_source, namespace)
-            except Exception:
-                pass
-
-    return namespace["preprocesar_datos"], namespace["obtener_resumen"]
-
-
-# Cargar notebooks
-extractor_path = os.path.join(os.path.dirname(__file__), "extractor.ipynb")
-with open(extractor_path, "rb") as f:
-    extractor_fp = hashlib.sha256(f.read()).hexdigest()
-
-preproc_path = os.path.join(os.path.dirname(__file__), "preprocesamiento.ipynb")
-with open(preproc_path, "rb") as f:
-    preproc_fp = hashlib.sha256(f.read()).hexdigest()
-
-procesar_boletin, validar_calidad = load_extractor(extractor_fp)
-from preprocesamiento import preprocesar_datos, obtener_resumen
-
-
-def cargar_dataset_preprocesado():
-    """
-    Obtiene el dataset preprocesado leyéndolo directamente del disco para evitar cachés obsoletos.
-    """
-    csv_preproc = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_preprocesado_sipa.csv")
-    if os.path.exists(csv_preproc):
+def _cargar_dataset_preprocesado_disco():
+    if os.path.exists(CSV_PREPROC):
         try:
-            return pd.read_csv(csv_preproc)
+            return pd.read_csv(CSV_PREPROC)
         except Exception:
-            pass
-
-    csv_crudo = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_crudo_sipa.csv")
-    if os.path.exists(csv_crudo):
-        try:
-            df_crudo = pd.read_csv(csv_crudo)
-            res = preprocesar_datos(df_crudo)
-            st.session_state["resultado_preprocesamiento"] = res
-            os.makedirs(os.path.dirname(csv_preproc), exist_ok=True)
-            res["dataset_final"].to_csv(csv_preproc, index=False, encoding="utf-8-sig")
-            return res["dataset_final"]
-        except Exception:
-            pass
-
+            return None
     return None
 
 
-def main():
-    ENCABEZADO_HTML = """
-    <div class="encabezado-sipa">
-        <h1>Clasificador de Precios Mayoristas SIPA</h1>
-        <p>Predicción del comportamiento de precios agrícolas en Ecuador mediante
-        aprendizaje automático supervisado — Random Forest, XGBoost, Decision Tree,
-        Logistic Regression, KNN y LSTM</p>
-        <span class="badge">Fuente: Sistema de Información Pública Agropecuaria (SIPA)</span>
-    </div>
-    """
-    st.markdown(ENCABEZADO_HTML, unsafe_allow_html=True)
+# ---------------------------------------------------------------------------
+# INICIO
+# ---------------------------------------------------------------------------
 
-    # Pestañas principales
-    tab1, tab2, tab3 = st.tabs([
-        "1. Extracción y Preprocesamiento",
-        "2. Entrenamiento de Modelos",
-        "3. Predicción de Precios",
-    ])
+@app.route("/")
+def inicio():
+    return render_template("inicio.html")
 
-    with st.sidebar:
-        st.markdown("### Proyecto")
-        st.caption("Grupo 4 · Inteligencia Artificial · ESPOL")
-        st.markdown("---")
-    
-        st.markdown("### Estado del pipeline")
-        estado_df = "df" in st.session_state
-        estado_preproc = "resultado_preprocesamiento" in st.session_state
-        estado_modelo = "res_entrenamiento" in st.session_state
-    
-        st.markdown(f"{'OK' if estado_df else '--'} Boletines extraídos")
-        st.markdown(f"{'OK' if estado_preproc else '--'} Datos preprocesados")
-        st.markdown(f"{'OK' if estado_modelo else '--'} Modelo entrenado")
-    
-        st.markdown("---")
-        st.markdown("### Sobre el proyecto")
-        st.caption(
-            "Clasifica el comportamiento futuro de precios mayoristas agrícolas "
-            "(Alza / Estable / Caída) a partir de boletines quincenales del SIPA."
-        )
 
-    # =========================================================================
-    # PESTAÑA 1: EXTRACCIÓN Y PREPROCESAMIENTO
-    # =========================================================================
-    with tab1:
-        st.header("1. Subir archivos de base de datos")
-        col_up1, col_up2 = st.columns(2)
-        
-        with col_up1:
-            st.subheader("Precios SIPA")
-            uploaded_file = st.file_uploader("Seleccione el archivo de precios mayoristas SIPA (.xlsx, .xls, .csv)", type=["xlsx", "xls", "csv"], key="uploader_excel")
-            
-        with col_up2:
-            st.subheader("Clima Histórico")
-            uploaded_clima = st.file_uploader("Seleccione el archivo de clima histórico (.xlsx, .xls, .csv)", type=["xlsx", "xls", "csv"], key="uploader_clima")
-            if uploaded_clima:
-                clima_dest_path = os.path.join(os.path.dirname(__file__), "data", "clima_historico.csv")
-                try:
-                    os.makedirs(os.path.dirname(clima_dest_path), exist_ok=True)
-                    if uploaded_clima.name.endswith('.csv'):
-                        with open(clima_dest_path, "wb") as f:
-                            f.write(uploaded_clima.getbuffer())
-                    else:
-                        # Si es Excel, leer y guardar como CSV
-                        df_clima_excel = pd.read_excel(uploaded_clima)
-                        df_clima_excel.to_csv(clima_dest_path, index=False, encoding='utf-8-sig')
-                    st.success("Base de datos de clima guardada exitosamente en el proyecto.")
-                except Exception as e:
-                    st.error(f"Error al guardar los datos climáticos: {e}")
+# ---------------------------------------------------------------------------
+# EXTRACCIÓN Y PREPROCESAMIENTO
+# ---------------------------------------------------------------------------
 
-        if uploaded_file and "df" not in st.session_state: 
-            st.divider()
-            with st.spinner("Procesando archivo de precios mayoristas..."):
-                try:
-                    if uploaded_file.name.endswith('.csv'):
-                        df_excel = pd.read_csv(uploaded_file)
-                    else:
-                        # Detección dinámica de hoja y fila de cabecera para Excel
-                        xl = pd.ExcelFile(uploaded_file)
-                        sheet_name = xl.sheet_names[0]
-                        if 'Precios Mercados12-26' in xl.sheet_names:
-                            sheet_name = 'Precios Mercados12-26'
-                        
-                        df_temp = pd.read_excel(uploaded_file, sheet_name=sheet_name, nrows=15)
-                        header_row = 0
-                        for r in range(len(df_temp)):
-                            row_vals = df_temp.iloc[r].dropna().astype(str).str.lower().tolist()
-                            if any('producto' in x for x in row_vals) and any('provincia' in x for x in row_vals):
-                                header_row = r + 1
-                                break
-                        
-                        df_excel = pd.read_excel(uploaded_file, sheet_name=sheet_name, skiprows=header_row)
-                    
-                    # Eliminar columnas Unnamed (vacías)
-                    df_excel = df_excel.loc[:, ~df_excel.columns.str.contains('^Unnamed')]
-                    
-                    # Normalizar nombres de columnas usando regex para evitar bugs de caracteres invisibles
-                    import re
-                    def limpiar_cabecera(c):
-                        s = str(c)
-                        # Reemplazos comunes
-                        s = s.replace('Ao', 'Año').replace('Cantn', 'Cantón')
-                        # Cualquier caracter raro o no-ascii/no-spanish lo marcamos temporalmente
-                        s = re.sub(r'[^\w\s\(\)/:\.,\$-]', 'ñ', s)
-                        # Corregir Cantñn -> Cantón y Año -> Año
-                        s = s.replace('Cantñn', 'Cantón').replace('Año', 'Año').replace('ñAñoñ', 'Año')
-                        return s
-                    
-                    df_excel.columns = [limpiar_cabecera(c) for c in df_excel.columns]
-                    col_year = [c for c in df_excel.columns if str(c).startswith('A') and str(c).endswith('o')]
-                    if not col_year:
-                        st.error(f"No se encontró la columna de Año en la hoja '{sheet_name}'. Columnas encontradas: {list(df_excel.columns)}")
-                        st.stop()
-                    col_year = col_year[0]
-                    df_excel = df_excel.rename(columns={col_year: 'Año'})
-                    
-                    month_map = {
-                        'Enero': 1, 'Febrero': 2, 'Marzo': 3, 'Abril': 4, 'Mayo': 5, 'Junio': 6,
-                        'Julio': 7, 'Agosto': 8, 'Septiembre': 9, 'Octubre': 10, 'Noviembre': 11, 'Diciembre': 12
-                    }
-                    df_excel['mes_num'] = df_excel['Mes'].map(month_map)
-                    df_excel['año_num'] = df_excel['Año'].astype(int)
-                    df_excel['provincia_std'] = df_excel['Provincia'].str.strip().str.upper()
-                    df_excel['mercado_std'] = df_excel['Mercado'].astype(str).str.strip()
-                    df_excel['canton_std'] = df_excel['Cantón'].astype(str).str.strip()
-                    df_excel['pres_std'] = df_excel['Pres.'].astype(str).str.strip()
-                    df_excel['tipo_mercado_std'] = df_excel['Tipo Mercado'].astype(str).str.strip()
+@app.route("/extraccion")
+def extraccion():
+    df_preview = None
+    reporte = CACHE.get("reporte_extraccion")
 
-                    df_clean = df_excel.dropna(subset=['Producto', 'provincia_std', 'año_num', 'mes_num', 'Promedio de Precio (USD)']).copy()
+    if os.path.exists(CSV_CRUDO):
+        df_full = pd.read_csv(CSV_CRUDO, encoding="utf-8-sig")
+        df_preview = df_full.tail(50)
+        if reporte is None:
+            reporte = {
+                "registros_completos": len(df_full),
+                "registros_parciales": int((df_full.get("estado_precio", pd.Series(dtype=str)) == "parcial").sum()),
+                "quincenas": df_full["periodo"].nunique() if "periodo" in df_full.columns else 0,
+            }
 
-                    df_clean = df_clean.sort_values(by=['Producto', 'provincia_std', 'canton_std', 'mercado_std', 'pres_std', 'año_num', 'mes_num']).reset_index(drop=True)
-                    df_clean['precio_anterior'] = df_clean.groupby(['Producto', 'provincia_std', 'canton_std', 'mercado_std', 'pres_std'])['Promedio de Precio (USD)'].shift(1)
-                    
-                    df_grouped = df_clean.rename(columns={
-                        'Producto': 'producto_raw',
-                        'Promedio de Precio (USD)': 'precio_actual',
-                        'provincia_std': 'provincia',
-                        'año_num': 'año',
-                        'mes_num': 'mes',
-                        'mercado_std': 'mercado',
-                        'canton_std': 'canton',
-                        'pres_std': 'presentacion',
-                        'tipo_mercado_std': 'tipo_mercado'
-                    })
-                    
-                    df_grouped['variacion'] = ((df_grouped['precio_actual'] - df_grouped['precio_anterior']) / df_grouped['precio_anterior']) * 100
-                    df_grouped['periodo'] = df_grouped['año'].astype(str) + "-" + df_grouped['mes'].astype(str).str.zfill(2)
-                    df_grouped['estado_precio'] = np.where(df_grouped['precio_anterior'].isna(), 'parcial', 'completo')
-                    
-                    csv_path = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_crudo_sipa.csv")
-                    prod_to_cat = {}
-                    if os.path.exists(csv_path):
-                        try:
-                            df_old = pd.read_csv(csv_path)
-                            prod_to_cat = df_old.drop_duplicates('producto_raw').set_index('producto_raw')['categoria'].to_dict()
-                        except Exception:
-                            pass
-                    
-                    unique_prods = df_grouped['producto_raw'].unique()
-                    cached_cat = {}
-                    from difflib import get_close_matches
-                    for prod in unique_prods:
-                        if prod in prod_to_cat:
-                            cached_cat[prod] = prod_to_cat[prod]
-                        else:
-                            matches = get_close_matches(prod, list(prod_to_cat.keys()), n=1, cutoff=0.6)
-                            if matches:
-                                cached_cat[prod] = prod_to_cat[matches[0]]
-                            else:
-                                non_perecedero_keywords = ['arroz', 'aceite', 'fideo', 'azúcar', 'café', 'harina', 'sal', 'grano', 'seco', 'lenteja', 'garbanzo']
-                                if any(k in prod.lower() for k in non_perecedero_keywords):
-                                    cached_cat[prod] = 'no_perecedero'
-                                else:
-                                    cached_cat[prod] = 'perecedero'
-                                    
-                    df_grouped['categoria'] = df_grouped['producto_raw'].map(cached_cat)
-                    
-                    st.session_state["df"] = df_grouped
-                    st.session_state["reporte"] = {
-                        "porcentaje_completitud": 100, 
-                        "registros_completos": len(df_grouped), 
-                        "registros_parciales": len(df_grouped[df_grouped['estado_precio'] == 'parcial']), 
-                        "registros_con_problema": 0, 
-                        "quincenas": df_grouped["periodo"].nunique(), 
-                        "problemas": []
-                    }
-                    
-                    # Guardar automáticamente el CSV crudo a disco
-                    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
-                    dfGuardar = df_grouped.copy()
-                    if os.path.exists(csv_path):
-                        try:
-                            dfExistente = pd.read_csv(csv_path, encoding="utf-8-sig")
-                            dfGuardar = pd.concat([dfExistente, dfGuardar], ignore_index=True)
-                            cols_dedup = [c for c in ["producto_raw", "provincia", "canton", "mercado", "presentacion", "periodo"] if c in dfGuardar.columns]
-                            if cols_dedup:
-                                dfGuardar = dfGuardar.drop_duplicates(subset=cols_dedup, keep="last").reset_index(drop=True)
-                        except Exception:
-                            pass
-                    dfGuardar.to_csv(csv_path, index=False, encoding="utf-8-sig")
-                    
-                    st.success("Archivo Excel procesado y guardado automáticamente en disco.")
-                    st.experimental_rerun()
-                except Exception as e:
-                    st.error(f"Error procesando el Excel: {e}")
-            
-        # --- NUEVO BOTÓN: CARGAR DATOS DESDE DISCO ---
-        csv_crudo_path = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_crudo_sipa.csv")
-        
-        if "df" not in st.session_state and os.path.exists(csv_crudo_path):
-            st.info("Se detectó un historial de extracciones guardado en disco.")
-            if st.button("Cargar dataset crudo desde disco (Saltar carga de Excel)", use_container_width=True):
-                df_cargado = pd.read_csv(csv_crudo_path, encoding="utf-8-sig")
-                st.session_state["df"] = df_cargado
-                
-                st.session_state["reporte"] = {
-                    "porcentaje_completitud": 100, 
-                    "registros_completos": len(df_cargado), 
-                    "registros_parciales": 0, 
-                    "registros_con_problema": 0, 
-                    "quincenas": df_cargado["periodo"].nunique() if "periodo" in df_cargado.columns else (df_cargado["quincena_id"].nunique() if "quincena_id" in df_cargado.columns else 0), 
-                    "problemas": []
-                }
-                st.experimental_rerun()
-        # ---------------------------------------------
-        
-        if "df" in st.session_state:
-            df = st.session_state["df"]
-            reporte = st.session_state["reporte"]
+    resultado_preproc = CACHE.get("resultado_preprocesamiento")
+    df_preproc_preview = None
+    stats = None
+    if resultado_preproc is not None:
+        df_preproc_preview = resultado_preproc["dataset_final"].tail(50)
+        stats = resultado_preproc["estadisticas"]
+    elif os.path.exists(CSV_PREPROC):
+        df_preproc_preview = pd.read_csv(CSV_PREPROC).tail(50)
 
-            st.divider()
-            st.header("2. Resultados de Extracción")
+    return render_template(
+        "extraccion.html",
+        df_preview=df_preview,
+        reporte=reporte,
+        df_preproc_preview=df_preproc_preview,
+        stats=stats,
+    )
 
-            completitud = reporte["porcentaje_completitud"]
-            if completitud >= 95:
-                st.success(f"Boletín procesado exitosamente — Completitud: {completitud}%")
-            elif completitud >= 80:
-                st.warning(f"Boletín procesado con advertencias — Completitud: {completitud}%")
-            else:
-                st.error(f"Boletín con problemas significativos — Completitud: {completitud}%")
 
-            col1, col2, col3, col4, col5, col6 = st.columns(6)
-            col1.metric("Registros", len(df))
-            col2.metric("Completos", reporte["registros_completos"])
-            col3.metric("Parciales", reporte["registros_parciales"])
-            col4.metric("Productos", df["producto_raw"].nunique())
-            col5.metric("Meses", reporte["quincenas"])
-            col6.metric("Calidad", f"{completitud}%")
+@app.route("/extraccion/subir-precios", methods=["POST"])
+def subir_precios():
+    archivo = request.files.get("archivo_precios")
+    if not archivo or archivo.filename == "":
+        flash("Selecciona un archivo de precios antes de subir.", "error")
+        return redirect(url_for("extraccion"))
+    try:
+        df, reporte = procesar_archivo_precios(archivo, CSV_CRUDO)
+        CACHE["reporte_extraccion"] = reporte
+        CACHE["resultado_preprocesamiento"] = None
+        flash(f"Archivo procesado correctamente: {len(df)} registros en total.", "exito")
+    except Exception as e:
+        flash(f"Error procesando el archivo: {e}", "error")
+    return redirect(url_for("extraccion"))
 
-            hay_problemas = reporte["registros_con_problema"] > 0
-            hay_parciales = reporte["registros_parciales"] > 0
 
-            # Registros Parciales
-            if hay_parciales:
-                st.divider()
-                st.header("3. Registros Parciales (Productos Nuevos)")
-                st.info(f"Se encontraron {reporte['registros_parciales']} productos nuevos sin precio anterior.")
-
-                df_parciales = df[df["estado_precio"] == "parcial"][["producto_raw", "precio_anterior", "precio_actual", "provincia", "periodo"]]
-                st.dataframe(df_parciales, use_container_width=True, height=200)
-
-                accion_parciales = st.radio(
-                    "¿Qué desea hacer con los productos nuevos?",
-                    ["Conservar todos (recomendado para entrenar modelos)", "Excluir productos nuevos"],
-                    horizontal=True,
-                    key="accion_parciales"
-                )
-
-                if accion_parciales.startswith("Excluir"):
-                    df = df[df["estado_precio"] != "parcial"]
-                    st.info(f"Se excluyeron {reporte['registros_parciales']} productos nuevos")
-
-            # Registros con Problemas
-            if hay_problemas:
-                st.divider()
-                st.header("4. Registros con Problemas")
-
-                n_invalidos = len(df[df["estado_precio"] == "invalido"])
-                if n_invalidos > 0:
-                    df = df[df["estado_precio"] != "invalido"]
-                    st.warning(f"Se excluyeron {n_invalidos} registros sin precios.")
-
-                st.subheader("Detalle de problemas")
-                df_problemas = pd.DataFrame(reporte["problemas"])
-                if not df_problemas.empty:
-                    if "precio_anterior" not in df_problemas.columns:
-                        df_problemas["precio_anterior"] = None
-                    if "precio_actual" not in df_problemas.columns:
-                        df_problemas["precio_actual"] = None
-                    cols_inv = ["tipo", "producto", "precio_anterior", "precio_actual", "provincia", "quincena", "detalle"]
-                    cols_inv = [c for c in cols_inv if c in df_problemas.columns]
-                    st.dataframe(df_problemas[cols_inv], use_container_width=True, height=250)
-
-            # Confirmación de revisión
-            if hay_problemas or hay_parciales:
-                st.divider()
-                st.header("5. Confirmar Revisión")
-                st.info("Revise los registros listados arriba.")
-                revision_confirmada = st.checkbox("Confirmo que revisé los registros", key="chk_revision")
-
-                if not revision_confirmada:
-                    st.stop()
-
-            # Vista previa de datos
-            st.divider()
-            st.header("Vista previa de datos extraídos")
-            st.dataframe(df, use_container_width=True, height=350)
-
-            # Guardar dataset crudo
-            col_save, col_download = st.columns(2)
-            with col_save:
-                csv_path = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_crudo_sipa.csv")
-                if st.button("Guardar CSV crudo",  key="btn_save_crudo"):
-                    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
-                    dfGuardar = df.copy()
-                    if os.path.exists(csv_path):
-                        dfExistente = pd.read_csv(csv_path, encoding="utf-8-sig")
-                        dfGuardar = pd.concat([dfExistente, dfGuardar], ignore_index=True)
-                        cols_dedup = [c for c in ["producto_raw", "provincia", "canton", "mercado", "presentacion", "periodo"] if c in dfGuardar.columns]
-                        if cols_dedup:
-                            dfGuardar = dfGuardar.drop_duplicates(subset=cols_dedup, keep="last").reset_index(drop=True)
-                    dfGuardar.to_csv(csv_path, index=False, encoding="utf-8-sig")
-                    st.success(f"Guardado: {csv_path} ({len(dfGuardar)} registros totales)")
-
-            with col_download:
-                csv_bytes = df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-                st.download_button(
-                    label="Descargar CSV crudo",
-                    data=csv_bytes,
-                    file_name="dataset_crudo_sipa.csv",
-                    mime="text/csv",
-                    
-                    key="btn_dl_crudo"
-                )
-
-            # Preprocesamiento
-            st.divider()
-            st.header("Preprocesamiento de datos")
-            st.markdown("Transformar los datos extraídos en un dataset listo para entrenar modelos de IA (generación de rezagos, promedios móviles y etiquetas de comportamiento).")
-
-            if st.button("Ejecutar preprocesamiento",  use_container_width=True, key="btn_ejecutar_preproc"):
-                with st.spinner("Preprocesando datos..."):
-                    try:
-                        csv_crudo_path = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_crudo_sipa.csv")
-                        if not os.path.exists(csv_crudo_path):
-                            st.error("No se encontró el dataset crudo en disco. Por favor, suba un boletín primero.")
-                        else:
-                            df_acumulado = pd.read_csv(csv_crudo_path)
-                            
-                            # Forzar recarga dinámica del módulo preprocesamiento modificado
-                            import importlib
-                            import preprocesamiento
-                            importlib.reload(preprocesamiento)
-                            
-                            resultado = preprocesamiento.preprocesar_datos(df_acumulado)
-                            csv_preproc_path = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_preprocesado_sipa.csv")
-                            os.makedirs(os.path.dirname(csv_preproc_path), exist_ok=True)
-
-                            df_nuevo_preproc = resultado["dataset_final"]
-                            df_nuevo_preproc.to_csv(csv_preproc_path, index=False, encoding="utf-8-sig")
-                            resultado["dataset_final"] = df_nuevo_preproc
-                            st.session_state["resultado_preprocesamiento"] = resultado
-                            if "res_entrenamiento" in st.session_state:
-                                del st.session_state["res_entrenamiento"]
-                            st.success("Preprocesamiento completado exitosamente y guardado en disco")
-                    except Exception as e:
-                        st.error(f"Error en preprocesamiento: {e}")
-                        import traceback
-                        st.code(traceback.format_exc())
-
-            if "resultado_preprocesamiento" in st.session_state:
-                resultado = st.session_state["resultado_preprocesamiento"]
-                stats = resultado["estadisticas"]
-
-                st.subheader("Resultado del Preprocesamiento")
-                col_st1, col_st2, col_st3 = st.columns(3)
-                col_st1.metric("Entrada (registros válidos)", stats["registros_completos"])
-                col_st2.metric("Salida (dataset final)", stats["registros_modelo"])
-                col_st3.metric("Productos descartados (>30% faltante)", stats["productos_descartados"])
-
-                if stats["productos_descartados"] > 0:
-                    st.warning(f"{stats['productos_descartados']} productos fueron eliminados por tener más del 30% de meses sin datos.")
-                    df_desc = pd.DataFrame(resultado["productos_descartados"])
-                    st.dataframe(df_desc, use_container_width=True)
-
-                df_modelo = resultado["dataset_final"]
-                st.subheader("Vista previa del dataset final preprocesado")
-                st.dataframe(df_modelo, use_container_width=True, height=350)
-
-                col_save2, col_download2 = st.columns(2)
-                with col_save2:
-                    csv_path2 = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_preprocesado_sipa.csv")
-                    if st.button("Guardar CSV preprocesado",  key="btn_save_preproc"):
-                        os.makedirs(os.path.dirname(csv_path2), exist_ok=True)
-                        dfGuardar2 = df_modelo.copy()
-                        dfGuardar2.to_csv(csv_path2, index=False, encoding="utf-8-sig")
-                        st.success(f"Guardado: {csv_path2} ({len(dfGuardar2)} registros totales)")
-
-                with col_download2:
-                    csv_bytes2 = df_modelo.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-                    st.download_button(
-                        label="Descargar CSV preprocesado",
-                        data=csv_bytes2,
-                        file_name="dataset_preprocesado_sipa.csv",
-                        mime="text/csv",
-                        
-                        key="btn_dl_preproc"
-                    )
-
-    # =========================================================================
-    # PESTAÑA 2: ENTRENAMIENTO DE MODELOS
-    # =========================================================================
-    with tab2:
-        st.header("Entrenamiento y Evaluación de Modelos")
-        st.markdown("Entrenar y evaluar modelos de clasificación (**Random Forest**, **XGBoost**, **Decision Tree**, **Logistic Regression**, **KNN** y **LSTM**).")
-
-        df_preproc_disponible = cargar_dataset_preprocesado()
-
-        if df_preproc_disponible is None:
-            st.info("Para entrenar los modelos, primero suba un boletín y ejecute el preprocesamiento en la pestaña **'1. Extracción y Preprocesamiento'**.")
+@app.route("/extraccion/subir-clima", methods=["POST"])
+def subir_clima():
+    archivo = request.files.get("archivo_clima")
+    if not archivo or archivo.filename == "":
+        flash("Selecciona un archivo de clima antes de subir.", "error")
+        return redirect(url_for("extraccion"))
+    try:
+        os.makedirs(os.path.dirname(CLIMA_PATH), exist_ok=True)
+        if archivo.filename.lower().endswith(".csv"):
+            archivo.save(CLIMA_PATH)
         else:
-            if st.button("Ejecutar entrenamiento y evaluación",  use_container_width=True, key="btn_train_models"):
-                with st.spinner("Entrenando modelos con TimeSeriesSplit... Esto tomará unos minutos."):
-                    try:
-                        le_prod = st.session_state.get("resultado_preprocesamiento", {}).get("le_producto")
-                        le_prov = st.session_state.get("resultado_preprocesamiento", {}).get("le_provincia")
-                        encoders = st.session_state.get("resultado_preprocesamiento", {}).get("encoders")
+            df_clima = pd.read_excel(archivo)
+            df_clima.to_csv(CLIMA_PATH, index=False, encoding="utf-8-sig")
+        flash("Datos climáticos guardados correctamente.", "exito")
+    except Exception as e:
+        flash(f"Error guardando datos climáticos: {e}", "error")
+    return redirect(url_for("extraccion"))
 
-                        # Forzar la recarga de las utilidades de entrenamiento para leer la lista FEATURES nueva
-                        import importlib
-                        import entrenamiento_utils
-                        importlib.reload(entrenamiento_utils)
 
-                        res_entrenamiento = entrenamiento_utils.ejecutar_entrenamiento_y_evaluacion(df_preproc_disponible, le_prod, le_prov, encoders=encoders)
-                        st.session_state["res_entrenamiento"] = res_entrenamiento
-                        st.success("Entrenamiento finalizado exitosamente")
-                    except Exception as e:
-                        st.error(f"Error durante el entrenamiento: {e}")
-                        import traceback
-                        st.code(traceback.format_exc())
+@app.route("/extraccion/preprocesar", methods=["POST"])
+def ejecutar_preprocesamiento():
+    if not os.path.exists(CSV_CRUDO):
+        flash("No hay dataset crudo en disco. Sube un archivo de precios primero.", "error")
+        return redirect(url_for("extraccion"))
+    try:
+        df_crudo = pd.read_csv(CSV_CRUDO)
+        resultado = preprocesar_datos(df_crudo)
+        resultado["dataset_final"].to_csv(CSV_PREPROC, index=False, encoding="utf-8-sig")
+        CACHE["resultado_preprocesamiento"] = resultado
+        CACHE["res_entrenamiento"] = None  # invalida entrenamientos previos con datos viejos
+        flash("Preprocesamiento completado y guardado en disco.", "exito")
+    except Exception as e:
+        flash(f"Error en preprocesamiento: {e}", "error")
+    return redirect(url_for("extraccion"))
 
-            if "res_entrenamiento" in st.session_state:
-                res = st.session_state["res_entrenamiento"]
 
-                st.divider()
-                st.subheader("1. Limpieza de filas sin rezago (NaN por historia insuficiente)")
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Filas iniciales", res["filas_antes"])
-                c2.metric("Filas eliminadas (sin rezago)", res["filas_eliminadas"])
-                c3.metric("Filas disponibles para entrenamiento", res["filas_despues"])
+# ---------------------------------------------------------------------------
+# ENTRENAMIENTO
+# ---------------------------------------------------------------------------
 
-                st.divider()
-                st.subheader("2. Tabla Comparativa de Modelos")
-                st.markdown("**Criterios de selección:** F1-Score (Macro) ≥ 0.70 y Accuracy ≥ 0.75")
-                st.dataframe(res["tabla_comparativa"], use_container_width=True)
+@app.route("/entrenamiento")
+def entrenamiento():
+    res = CACHE.get("res_entrenamiento")
+    return render_template("entrenamiento.html", res=res)
 
-                st.success(f"**MODELO SELECCIONADO:** {res['mejor_nombre']} | F1-Score: {res['mejor_metricas']['F1-Score (Macro)']} | Accuracy: {res['mejor_metricas']['Accuracy']}")
 
-    # =========================================================================
-    # PESTAÑA 3: PREDICCIÓN DE PRECIOS
-    # =========================================================================
-    with tab3:
-        st.header("Clasificación y Predicción de Precios")
-        st.markdown("Realizar clasificaciones del comportamiento del precio (*Alza*, *Estable*, *Caída*) utilizando el modelo entrenado guardado.")
+@app.route("/entrenamiento/ejecutar", methods=["POST"])
+def ejecutar_entrenamiento():
+    if not os.path.exists(CSV_PREPROC):
+        flash("Primero debes ejecutar el preprocesamiento en la sección Extracción.", "error")
+        return redirect(url_for("entrenamiento"))
+    try:
+        df_preproc = pd.read_csv(CSV_PREPROC)
+        resultado_preproc = CACHE.get("resultado_preprocesamiento") or {}
+        le_prod = resultado_preproc.get("le_producto")
+        le_prov = resultado_preproc.get("le_provincia")
+        encoders = resultado_preproc.get("encoders")
 
-        modelo, le_target, le_prod, le_prov, features = cargar_modelo_y_artefactos()
-        df_preproc = cargar_dataset_preprocesado()
+        res = ejecutar_entrenamiento_y_evaluacion(df_preproc, le_prod, le_prov, encoders=encoders)
+        CACHE["res_entrenamiento"] = res
+        flash(f"Entrenamiento finalizado. Modelo seleccionado: {res['mejor_nombre']}.", "exito")
+    except Exception as e:
+        flash(f"Error durante el entrenamiento: {e}", "error")
+    return redirect(url_for("entrenamiento"))
 
-        if modelo is None:
-            st.info("Para realizar predicciones, ejecute primero el entrenamiento del modelo en la pestaña **'2. Entrenamiento de Modelos'**.")
+
+# ---------------------------------------------------------------------------
+# PREDICCIÓN
+# ---------------------------------------------------------------------------
+
+@app.route("/prediccion")
+def prediccion():
+    modelo, le_target, le_prod, le_prov, features = cargar_modelo_y_artefactos(MODELS_DIR)
+    df_preproc = _cargar_dataset_preprocesado_disco()
+
+    productos = list(le_prod.classes_) if le_prod is not None and hasattr(le_prod, "classes_") else []
+    if not productos and df_preproc is not None and "producto" in df_preproc.columns:
+        productos = sorted(df_preproc["producto"].dropna().unique().tolist())
+
+    provincias = list(le_prov.classes_) if le_prov is not None and hasattr(le_prov, "classes_") else []
+    if not provincias and df_preproc is not None and "provincia" in df_preproc.columns:
+        provincias = sorted(df_preproc["provincia"].dropna().unique().tolist())
+
+    return render_template(
+        "prediccion.html",
+        modelo_listo=(modelo is not None),
+        productos=productos,
+        provincias=provincias,
+        resultado=None,
+        registro=None,
+        seleccion=None,
+        df_lote=None,
+    )
+
+
+@app.route("/prediccion/individual", methods=["POST"])
+def prediccion_individual():
+    producto = request.form.get("producto")
+    provincia = request.form.get("provincia")
+
+    modelo, le_target, le_prod, le_prov, features = cargar_modelo_y_artefactos(MODELS_DIR)
+    df_preproc = _cargar_dataset_preprocesado_disco()
+
+    if modelo is None:
+        flash("Todavía no hay un modelo entrenado. Ve a la sección Entrenamiento primero.", "error")
+        return redirect(url_for("prediccion"))
+
+    productos = list(le_prod.classes_) if le_prod is not None else (
+        sorted(df_preproc["producto"].unique()) if df_preproc is not None else []
+    )
+    provincias = list(le_prov.classes_) if le_prov is not None else (
+        sorted(df_preproc["provincia"].unique()) if df_preproc is not None else []
+    )
+
+    registro = obtener_ultimo_registro(df_preproc, producto, provincia) if df_preproc is not None else None
+    resultado = None
+
+    if registro is not None:
+        val_pt1 = registro.get("precio_t1")
+        val_pt2 = registro.get("precio_t2")
+        val_mes = int(registro.get("mes", 6)) if pd.notna(registro.get("mes")) else 6
+
+        if pd.notna(val_pt1) and pd.notna(val_pt2):
+            pred_label, probs, _ = predecir_registro(
+                val_pt1, val_pt2, val_mes,
+                producto, provincia,
+                le_prod, le_prov, le_target, modelo, features,
+                categoria_perecedero=int(registro.get("categoria_perecedero", 0)) if pd.notna(registro.get("categoria_perecedero")) else 0,
+                canton_encoded=registro.get("canton_encoded", 0.0),
+                mercado_encoded=registro.get("mercado_encoded", 0.0),
+                presentacion_encoded=registro.get("presentacion_encoded", 0.0),
+                tipo_mercado_encoded=registro.get("tipo_mercado_encoded", 0.0),
+            )
+            resultado = {"clase": pred_label, "probs": probs}
         else:
-            st.success("Modelo entrenado cargado exitosamente desde disco.")
+            flash("Este registro no cuenta con suficiente historia previa para clasificar.", "error")
+    else:
+        flash("No se encontraron registros para esa combinación de producto y provincia.", "error")
 
-            tab_sub_indiv, tab_sub_lote = st.tabs(["Predicción por Producto y Provincia", "Clasificación en Lote (Dataset)"])
+    return render_template(
+        "prediccion.html",
+        modelo_listo=True,
+        productos=productos,
+        provincias=provincias,
+        resultado=resultado,
+        registro=registro,
+        seleccion={"producto": producto, "provincia": provincia},
+        df_lote=None,
+    )
 
-            # --- SUB-TAB 1: PREDICCIÓN POR PRODUCTO Y PROVINCIA ---
-            with tab_sub_indiv:
-                st.subheader("Seleccionar Producto y Provincia")
 
-                prods_lista = list(le_prod.classes_) if le_prod else (list(df_preproc["producto"].unique()) if (df_preproc is not None and "producto" in df_preproc.columns) else ["General"])
-                provs_lista = list(le_prov.classes_) if le_prov else (list(df_preproc["provincia"].unique()) if (df_preproc is not None and "provincia" in df_preproc.columns) else ["General"])
+@app.route("/prediccion/lote", methods=["POST"])
+def prediccion_lote():
+    modelo, le_target, le_prod, le_prov, features = cargar_modelo_y_artefactos(MODELS_DIR)
+    df_preproc = _cargar_dataset_preprocesado_disco()
 
-                col_p1, col_p2 = st.columns(2)
-                with col_p1:
-                    sel_producto = st.selectbox("Seleccione el Producto", prods_lista, key="pred_prod_tab3")
-                with col_p2:
-                    sel_provincia = st.selectbox("Seleccione la Provincia", provs_lista, key="pred_prov_tab3")
+    if modelo is None or df_preproc is None:
+        flash("Necesitas un modelo entrenado y un dataset preprocesado para clasificar en lote.", "error")
+        return redirect(url_for("prediccion"))
 
-                rec = obtener_ultimo_registro(df_preproc, sel_producto, sel_provincia) if df_preproc is not None else None
+    df_predicho = predecir_dataframe(df_preproc, modelo, le_target, features)
+    CACHE["df_predicho"] = df_predicho
+    flash(f"Se clasificaron {len(df_predicho)} registros.", "exito")
+    return redirect(url_for("prediccion_resultados_lote"))
 
-                if rec is not None:
-                    st.divider()
-                    st.subheader("Datos Históricos Detectados en el Dataset")
 
-                    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-                    col_m1.metric("Período / Quincena", str(rec.get("periodo", "N/A")))
-                    col_m2.metric("Precio Quincena Anterior (t1)", f"${rec.get('precio_t1', 0):.2f}" if pd.notna(rec.get('precio_t1')) else "N/A")
-                    col_m3.metric("Precio Hace 2 Quincenas (t2)", f"${rec.get('precio_t2', 0):.2f}" if pd.notna(rec.get('precio_t2')) else "N/A")
-                    col_m4.metric("Precio Registrado en Boletín", f"${rec.get('precio_actual', 0):.2f}" if pd.notna(rec.get('precio_actual')) else "N/A")
+@app.route("/prediccion/lote/resultados")
+def prediccion_resultados_lote():
+    df_predicho = CACHE.get("df_predicho")
+    modelo, le_target, le_prod, le_prov, features = cargar_modelo_y_artefactos(MODELS_DIR)
+    productos = list(le_prod.classes_) if le_prod is not None else []
+    provincias = list(le_prov.classes_) if le_prov is not None else []
+    return render_template(
+        "prediccion.html",
+        modelo_listo=(modelo is not None),
+        productos=productos,
+        provincias=provincias,
+        resultado=None,
+        registro=None,
+        seleccion=None,
+        df_lote=df_predicho.head(200) if df_predicho is not None else None,
+    )
 
-                    val_pt1 = rec.get("precio_t1")
-                    val_pt2 = rec.get("precio_t2")
-                    val_mes = int(rec.get("mes", 6)) if pd.notna(rec.get("mes")) else 6
-                    comp_real = rec.get("comportamiento", None)
 
-                    if pd.notna(val_pt1) and pd.notna(val_pt2):
-                        if st.button("Clasificar / Predecir Comportamiento",  use_container_width=True, key="btn_predecir_auto_tab3"):
-                            pred_label, probs, inputs_derived = predecir_registro(
-                                val_pt1, val_pt2, val_mes,
-                                sel_producto, sel_provincia,
-                                le_prod, le_prov, le_target, modelo, features,
-                                categoria_perecedero=int(rec.get("categoria_perecedero", 0)) if pd.notna(rec.get("categoria_perecedero")) else 0,
-                                canton_encoded=rec.get("canton_encoded", 0.0),
-                                mercado_encoded=rec.get("mercado_encoded", 0.0),
-                                presentacion_encoded=rec.get("presentacion_encoded", 0.0),
-                                tipo_mercado_encoded=rec.get("tipo_mercado_encoded", 0.0)
-                            )
-
-                            st.divider()
-                            st.markdown("### Resultado de la Clasificación")
-
-                            col_r1, col_r2 = st.columns(2)
-                            with col_r1:
-                                if pred_label == "Alza":
-                                    st.markdown('''
-                                    <div style="background:#5c1a1a;border-left:5px solid #e63946;
-                                                padding:1rem 1.2rem;border-radius:10px;">
-                                        <b style="color:#ffb3ba;font-size:1.1rem;"> ALZA</b><br>
-                                        <span style="color:#f1c0c0;">Pronóstico de incremento de precio &gt; +3%</span>
-                                    </div>''', unsafe_allow_html=True)
-                                elif pred_label == "Caída":
-                                    st.markdown('''
-                                    <div style="background:#1b4332;border-left:5px solid #52b788;
-                                                padding:1rem 1.2rem;border-radius:10px;">
-                                        <b style="color:#b7e4c7;font-size:1.1rem;"> CAÍDA</b><br>
-                                        <span style="color:#d8f3dc;">Pronóstico de reducción de precio &lt; -3%</span>
-                                    </div>''', unsafe_allow_html=True)
-                                else:
-                                    st.markdown('''
-                                    <div style="background:#4a3b1f;border-left:5px solid #e9c46a;
-                                                padding:1rem 1.2rem;border-radius:10px;">
-                                        <b style="color:#f4dfa8;font-size:1.1rem;"> ESTABLE</b><br>
-                                        <span style="color:#f0e6c8;">El precio se mantendrá en el rango de ±3%</span>
-                                    </div>''', unsafe_allow_html=True)
-                            
-                            with col_r2:
-                                if comp_real:
-                                    st.info(f"**Comportamiento Real Registrado:** {comp_real}")
-
-                            if probs:
-                                st.markdown("**Confianza de la Clasificación:**")
-                                cols_prob = st.columns(len(probs))
-                                for idx, (cls_name, prob_val) in enumerate(probs.items()):
-                                    cols_prob[idx].metric(f"Probabilidad {cls_name}", f"{prob_val}%")
-                    else:
-                        st.warning("Este registro no cuenta con suficiente historia previa (NaN) para clasificar.")
-                else:
-                    if df_preproc is None:
-                        st.info("Para detectar precios automáticamente, suba un boletín y ejecute el preprocesamiento en la Pestaña 1 una primera vez.")
-                    else:
-                        st.info("No se encontraron registros en el dataset para esta combinación específica de producto y provincia.")
-
-            # --- SUB-TAB 2: CLASIFICACIÓN EN LOTE ---
-            with tab_sub_lote:
-                st.subheader("Clasificar todo el dataset preprocesado")
-                if df_preproc is not None:
-                    if st.button("Ejecutar clasificación en lote",  use_container_width=True, key="btn_lote_tab3"):
-                        df_predicho = predecir_dataframe(df_preproc, modelo, le_target, features)
-                        st.session_state["df_predicho"] = df_predicho
-                        st.success(f"Clasificados {len(df_predicho)} registros")
-
-                    if "df_predicho" in st.session_state:
-                        df_res = st.session_state["df_predicho"]
-                        cols_mostrar = ["producto", "provincia", "periodo", "precio_t1", "precio_actual", "comportamiento", "prediccion"]
-                        cols_mostrar = [c for c in cols_mostrar if c in df_res.columns]
-
-                        st.dataframe(df_res[cols_mostrar], use_container_width=True, height=350)
-
-                        csv_lote = df_res.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-                        st.download_button(
-                            label="Descargar Predicciones (CSV)",
-                            data=csv_lote,
-                            file_name="predicciones_sipa.csv",
-                            mime="text/csv",
-                            
-                            key="btn_dl_lote_tab3"
-                        )
-                else:
-                    st.info("Debe ejecutar el preprocesamiento en la Pestaña 1 para clasificar el dataset completo.")
+@app.route("/prediccion/lote/descargar")
+def descargar_lote():
+    df_predicho = CACHE.get("df_predicho")
+    if df_predicho is None:
+        flash("Primero ejecuta la clasificación en lote.", "error")
+        return redirect(url_for("prediccion"))
+    buf = io.BytesIO()
+    df_predicho.to_csv(buf, index=False, encoding="utf-8-sig")
+    buf.seek(0)
+    return send_file(
+        buf,
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name="predicciones_sipa.csv",
+    )
 
 
 if __name__ == "__main__":
-    main()
+    # use_reloader=False es importante: el entrenamiento puede tardar varios
+    # minutos, y PyTorch a veces modifica sus propios archivos de configuración
+    # internos (torch/_dynamo/config.py, torch/_functorch/config.py) al usarse.
+    # Con el reloader activo, Flask interpreta eso como "cambió el código" y
+    # reinicia el servidor a mitad del entrenamiento, matando la petición en curso.
+    # Si vas a editar el código y quieres que se recargue solo, cambia esto a
+    # use_reloader=True mientras programas (pero no mientras entrenas modelos).
+    app.run(debug=True, use_reloader=False)
