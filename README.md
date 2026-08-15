@@ -26,7 +26,8 @@ pip install -r requirements.txt
 
 ```bash
 .\.venv\Scripts\activate
-streamlit run app.py
+python app.py
 ```
 
-La interfaz se abre en `http://localhost:8501`. Suba un boletin SIPA en formato PDF y haga clic en **Procesar**.
+La interfaz se abre en `http://localhost:5000`.
+

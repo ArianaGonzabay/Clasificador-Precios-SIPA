@@ -1,2 +1,2 @@
 Set-Location $PSScriptRoot
-& "$PSScriptRoot\.venv\Scripts\streamlit.exe" run app.py
+& "$PSScriptRoot\.venv\Scripts\python.exe" app.py
