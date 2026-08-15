@@ -229,7 +229,7 @@ def main():
         <h1>Clasificador de Precios Mayoristas SIPA</h1>
         <p>Predicción del comportamiento de precios agrícolas en Ecuador mediante
         aprendizaje automático supervisado — Random Forest, XGBoost, Decision Tree,
-        Logistic Regression, KNN y SVM</p>
+        Logistic Regression y KNN</p>
         <span class="badge">Fuente: Sistema de Información Pública Agropecuaria (SIPA)</span>
     </div>
     """
@@ -611,7 +611,7 @@ def main():
     # =========================================================================
     with tab2:
         st.header("Entrenamiento y Evaluación de Modelos")
-        st.markdown("Entrenar y evaluar modelos de clasificación (**Random Forest**, **XGBoost**, **Decision Tree**, **Logistic Regression**, **KNN**, **SVM** y **LSTM**).")
+        st.markdown("Entrenar y evaluar modelos de clasificación (**Random Forest**, **XGBoost**, **Decision Tree**, **Logistic Regression**, **KNN** y **LSTM**).")
 
         df_preproc_disponible = cargar_dataset_preprocesado()
 
@@ -619,7 +619,7 @@ def main():
             st.info("Para entrenar los modelos, primero suba un boletín y ejecute el preprocesamiento en la pestaña **'1. Extracción y Preprocesamiento'**.")
         else:
             if st.button("Ejecutar entrenamiento y evaluación",  use_container_width=True, key="btn_train_models"):
-                with st.spinner("Entrenando modelos con TimeSeriesSplit... Esto tomará unos segundos."):
+                with st.spinner("Entrenando modelos con TimeSeriesSplit... Esto tomará unos minutos."):
                     try:
                         le_prod = st.session_state.get("resultado_preprocesamiento", {}).get("le_producto")
                         le_prov = st.session_state.get("resultado_preprocesamiento", {}).get("le_provincia")

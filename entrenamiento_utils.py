@@ -137,19 +137,24 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
     y_encoded = le_target.fit_transform(y)
 
     # --- CLASES LSTM ---
-    class LSTMRegresorModule(nn.Module):
-        def __init__(self, input_dim=17, hidden_units=64):
+    class LSTMClasificadorModule(nn.Module):
+        def __init__(self, input_dim=43, hidden_units=128, num_classes=3):
             super().__init__()
             self.lstm = nn.LSTM(input_size=input_dim, hidden_size=hidden_units, num_layers=2, batch_first=True)
-            self.fc = nn.Linear(hidden_units, 1)
+            self.dropout = nn.Dropout(0.15)
+            self.fc1 = nn.Linear(hidden_units, 32)
+            self.fc2 = nn.Linear(32, num_classes)
+            self.relu = nn.ReLU()
 
         def forward(self, x):
             out, _ = self.lstm(x)
-            out = self.fc(out[:, -1, :])
+            out = self.dropout(out[:, -1, :])
+            out = self.relu(self.fc1(out))
+            out = self.fc2(out)
             return out
 
     class LSTMModeloProfesor(BaseEstimator):
-        def __init__(self, look_back=2, epochs=35, lr=0.01):
+        def __init__(self, look_back=1, epochs=75, lr=0.005):
             self.look_back = look_back
             self.epochs = epochs
             self.lr = lr
@@ -159,12 +164,24 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
         def fit(self, X, y):
             X_arr = X.values if isinstance(X, pd.DataFrame) else np.array(X)
             X_scaled = self.scaler.fit_transform(X_arr)
-            y_var = X["variacion_t2_t1"].values.astype(np.float32) if isinstance(X, pd.DataFrame) else X_arr[:, 2].astype(np.float32)
-            X_t = torch.FloatTensor(X_scaled).unsqueeze(1)
-            y_t = torch.FloatTensor(y_var).unsqueeze(1)
-            self.model = LSTMRegresorModule(input_dim=X_scaled.shape[1], hidden_units=64)
-            criterion = nn.MSELoss()
-            optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
+            
+            X_t = torch.FloatTensor(X_scaled).unsqueeze(1) 
+            y_t = torch.LongTensor(y)
+            
+            clases_unicas = np.unique(y)
+            pesos_c = compute_sample_weight("balanced", y)
+            pesos_clase_unicas = []
+            for c in sorted(clases_unicas):
+                pesos_clase_unicas.append(pesos_c[y == c][0])
+            pesos_tensor = torch.FloatTensor(pesos_clase_unicas)
+            
+            self.model = LSTMClasificadorModule(input_dim=X_scaled.shape[1], hidden_units=128, num_classes=3)
+            criterion = nn.CrossEntropyLoss(weight=pesos_tensor)
+            optimizer = optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=1e-3)
+            
+            # Simple decaimiento de Learning Rate por época
+            scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.epochs)
+            
             self.model.train()
             for epoch in range(self.epochs):
                 optimizer.zero_grad()
@@ -172,26 +189,19 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
                 loss = criterion(output, y_t)
                 loss.backward()
                 optimizer.step()
+                scheduler.step()
             return self
 
         def predict(self, X):
             X_arr = X.values if isinstance(X, pd.DataFrame) else np.array(X)
             X_scaled = self.scaler.transform(X_arr)
             X_t = torch.FloatTensor(X_scaled).unsqueeze(1)
+            
             self.model.eval()
             with torch.no_grad():
-                var_preds = self.model(X_t).squeeze().numpy()
-            if var_preds.ndim == 0:
-                var_preds = np.array([var_preds.item()])
-            clases = []
-            for v in var_preds:
-                if v > 7.0:
-                    clases.append(0) # Alza
-                elif v < -7.0:
-                    clases.append(1) # Caida
-                else:
-                    clases.append(2) # Estable
-            return np.array(clases)
+                preds_logits = self.model(X_t)
+                preds = torch.argmax(preds_logits, dim=1).numpy()
+            return preds
 
     # 6. CONFIGURACIÓN DE MODELOS
     modelos_config = {
@@ -220,7 +230,7 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
         "Decision Tree": DecisionTreeClassifier(max_depth=12, min_samples_split=5, random_state=42, class_weight="balanced"),
         "Logistic Regression": LogisticRegression(C=1.0, solver="lbfgs", max_iter=1000, random_state=42, class_weight="balanced"),
         "KNN": KNeighborsClassifier(n_neighbors=7, weights="distance"),
-        "LSTM": LSTMModeloProfesor(look_back=2, epochs=30, lr=0.01),
+        "LSTM": LSTMModeloProfesor(look_back=1, epochs=75, lr=0.005),
     }
 
     # 7. ENTRENAMIENTO Y EVALUACIÓN
