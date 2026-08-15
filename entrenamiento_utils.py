@@ -6,7 +6,6 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.neighbors import KNeighborsClassifier
-from sklearn.svm import SVC
 from xgboost import XGBClassifier
 from sklearn.model_selection import TimeSeriesSplit, StratifiedKFold
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, confusion_matrix
@@ -20,28 +19,56 @@ import numpy as np
 
 # FEATURES actualizadas con variables informativas de series temporales reales + Lags temporales
 FEATURES = [
-    "precio_t1", 
+    # Rezagos de precio (historia de 6 quincenas ≈ 3 meses)
+    "precio_t1",
+    "precio_t2",
+    "precio_t3",
+    "precio_t4",
+    "precio_t5",
+    "precio_t6",
+    # Variaciones entre rezagos
     "variacion_t2_t1",
-    # --- CAMBIO CLAVE: De valores crudos a distancias relativas ---
-    "distancia_pm2_pct", # Qué tan lejos está el precio de su promedio de 2 quincenas
-    "distancia_pm3_pct", # Qué tan lejos está el precio de su promedio de 3 quincenas
-    # --------------------------------------------------------------
-    "volatilidad_3q", 
+    "variacion_t3_t1",
+    # Comparación año a año
+    "variacion_yoy",
+    # Rolling statistics
+    "promedio_movil_2q",
+    "promedio_movil_3q",
+    "volatilidad_3q",
     "momentum",
-    "mes_seno", 
-    "mes_coseno", 
-    "producto_encoded", 
-    "provincia_encoded", 
+    # Interacciones temporales y cruces
+    "precio_vs_tendencia",
+    "cruce_medias",
+    # Estacionalidad
+    "mes_seno",
+    "mes_coseno",
+    # Categorías codificadas (Target Encoding)
+    "producto_encoded",
+    "provincia_encoded",
+    "canton_encoded",
+    "mercado_encoded",
+    "presentacion_encoded",
+    "tipo_mercado_encoded",
     "categoria_perecedero",
+    # Variables climáticas Open-Meteo (mes actual)
+    "clima_temp_media",
+    "clima_precipitacion_mm",
+    # Rezagos climáticos (mes anterior y hace 2 meses)
+    "clima_temp_lag1",
+    "clima_temp_lag2",
+    "clima_precip_lag1",
+    "clima_precip_lag2",
+    # Acumulados climáticos
+    "clima_precip_acc3",
 ]
 TARGET = "comportamiento"
 FEATURES_REZAGO = ["precio_t2", "variacion_t2_t1", "promedio_movil_2q", "promedio_movil_3q"]
 
 # Modelos que necesitan features escaladas (sensibles a la magnitud de las variables)
-MODELOS_QUE_NECESITAN_ESCALADO = {"Logistic Regression", "SVM"}
+MODELOS_QUE_NECESITAN_ESCALADO = {"Logistic Regression"}
 
 
-def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia=None):
+def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia=None, encoders=None):
     """
     Ejecuta la Fase 2: Ordenamiento temporal cronológico, limpieza de filas sin rezago,
     entrenamiento de los modelos, cálculo de métricas y guardado del mejor modelo.
@@ -103,7 +130,7 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
         lags_cols.append(col)
 
     feature_cols = FEATURES + lags_cols
-    X = df_limpio[feature_cols].copy()
+    X = df_limpio[feature_cols].copy().fillna(0.0)
     y = df_limpio[TARGET].copy()
 
     le_target = LabelEncoder()
@@ -166,18 +193,38 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
                     clases.append(2) # Estable
             return np.array(clases)
 
-    # 6. CONFIGURACIÓN DE MODELOS (Restaurada a la versión ganadora para evitar subajuste)
+    # 6. CONFIGURACIÓN DE MODELOS
     modelos_config = {
-        "Random Forest": RandomForestClassifier(n_estimators=500, max_depth=25, random_state=42, n_jobs=-1, class_weight="balanced"),
-        "XGBoost": XGBClassifier(learning_rate=0.08, max_depth=9, n_estimators=400, subsample=0.85, colsample_bytree=0.85, random_state=42, n_jobs=-1),
-        "Decision Tree": DecisionTreeClassifier(max_depth=10, min_samples_split=5, random_state=42, class_weight="balanced"),
+        "Random Forest": RandomForestClassifier(
+            n_estimators=300,
+            max_depth=28,
+            min_samples_leaf=1,
+            random_state=42,
+            n_jobs=-1,
+            class_weight="balanced",
+        ),
+        "XGBoost": XGBClassifier(
+            learning_rate=0.1,
+            max_depth=12,
+            n_estimators=500,
+            subsample=0.9,
+            colsample_bytree=0.9,
+            min_child_weight=1,
+            gamma=0.01,
+            reg_alpha=0.01,
+            reg_lambda=0.5,
+            random_state=42,
+            n_jobs=-1,
+            eval_metric="mlogloss",
+        ),
+        "Decision Tree": DecisionTreeClassifier(max_depth=12, min_samples_split=5, random_state=42, class_weight="balanced"),
         "Logistic Regression": LogisticRegression(C=1.0, solver="lbfgs", max_iter=1000, random_state=42, class_weight="balanced"),
-        "KNN": KNeighborsClassifier(n_neighbors=5, weights="distance"),
-        "SVM": SVC(C=1.0, kernel="rbf", random_state=42, class_weight="balanced", probability=True),
+        "KNN": KNeighborsClassifier(n_neighbors=7, weights="distance"),
         "LSTM": LSTMModeloProfesor(look_back=2, epochs=30, lr=0.01),
     }
 
     # 7. ENTRENAMIENTO Y EVALUACIÓN
+    # 5 folds con 50k registros da estimaciones estadísticamente robustas
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
     resultados = {}
     candidatos = []
@@ -277,8 +324,19 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
         joblib.dump(mejor_scaler, os.path.join(models_dir, "scaler.pkl"))
     if le_producto is not None:
         joblib.dump(le_producto, os.path.join(models_dir, "le_producto.pkl"))
+    elif encoders is not None and "producto" in encoders:
+        joblib.dump(encoders["producto"], os.path.join(models_dir, "le_producto.pkl"))
+        
     if le_provincia is not None:
         joblib.dump(le_provincia, os.path.join(models_dir, "le_provincia.pkl"))
+    elif encoders is not None and "provincia" in encoders:
+        joblib.dump(encoders["provincia"], os.path.join(models_dir, "le_provincia.pkl"))
+
+    if encoders is not None:
+        for name, enc in encoders.items():
+            if name not in ["producto", "provincia"]:
+                joblib.dump(enc, os.path.join(models_dir, f"le_{name}.pkl"))
+
     joblib.dump(FEATURES, os.path.join(models_dir, "features.pkl"))
 
     return {

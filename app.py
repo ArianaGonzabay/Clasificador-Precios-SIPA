@@ -194,17 +194,13 @@ with open(preproc_path, "rb") as f:
     preproc_fp = hashlib.sha256(f.read()).hexdigest()
 
 procesar_boletin, validar_calidad = load_extractor(extractor_fp)
-preprocesar_datos, obtener_resumen = load_preprocesamiento(preproc_fp)
+from preprocesamiento import preprocesar_datos, obtener_resumen
 
 
 def cargar_dataset_preprocesado():
     """
-    Obtiene el dataset preprocesado desde session_state o lo carga automáticamente desde el CSV guardado en disco.
-    Si solo existe el dataset crudo, ejecuta el preprocesamiento automáticamente.
+    Obtiene el dataset preprocesado leyéndolo directamente del disco para evitar cachés obsoletos.
     """
-    if "resultado_preprocesamiento" in st.session_state:
-        return st.session_state["resultado_preprocesamiento"].get("dataset_final")
-
     csv_preproc = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_preprocesado_sipa.csv")
     if os.path.exists(csv_preproc):
         try:
@@ -271,21 +267,148 @@ def main():
     # PESTAÑA 1: EXTRACCIÓN Y PREPROCESAMIENTO
     # =========================================================================
     with tab1:
-        st.header("1. Subir boletines PDF")
+        st.header("1. Subir base de datos Excel")
         
-        uploaded_files = st.file_uploader("Seleccione los archivos PDF de boletines SIPA", type=["pdf"], accept_multiple_files=True, key="uploader_pdf")
+        uploaded_file = st.file_uploader("Seleccione el archivo Excel de precios mayoristas SIPA (.xlsx, .xls)", type=["xlsx", "xls"], key="uploader_excel")
 
-        if uploaded_files: 
+        if uploaded_file and "df" not in st.session_state: 
             st.divider()
-            # ... (código del uploader que ya tenías) ...
+            with st.spinner("Procesando archivo Excel de precios mayoristas..."):
+                try:
+                    # Detección dinámica de hoja y fila de cabecera
+                    xl = pd.ExcelFile(uploaded_file)
+                    sheet_name = xl.sheet_names[0]
+                    if 'Precios Mercados12-26' in xl.sheet_names:
+                        sheet_name = 'Precios Mercados12-26'
+                    
+                    df_temp = pd.read_excel(uploaded_file, sheet_name=sheet_name, nrows=15)
+                    header_row = 0
+                    for r in range(len(df_temp)):
+                        row_vals = df_temp.iloc[r].dropna().astype(str).str.lower().tolist()
+                        if any('producto' in x for x in row_vals) and any('provincia' in x for x in row_vals):
+                            header_row = r + 1
+                            break
+                    
+                    df_excel = pd.read_excel(uploaded_file, sheet_name=sheet_name, skiprows=header_row)
+                    
+                    # Normalizar nombres de columnas usando regex para evitar bugs de caracteres invisibles
+                    import re
+                    def limpiar_cabecera(c):
+                        s = str(c)
+                        # Reemplazos comunes
+                        s = s.replace('Ao', 'Año').replace('Cantn', 'Cantón')
+                        # Cualquier caracter raro o no-ascii/no-spanish lo marcamos temporalmente
+                        s = re.sub(r'[^\w\s\(\)/:\.,\$-]', 'ñ', s)
+                        # Corregir Cantñn -> Cantón y Año -> Año
+                        s = s.replace('Cantñn', 'Cantón').replace('Año', 'Año').replace('ñAñoñ', 'Año')
+                        return s
+                    
+                    df_excel.columns = [limpiar_cabecera(c) for c in df_excel.columns]
+                    col_year = [c for c in df_excel.columns if str(c).startswith('A') and str(c).endswith('o')]
+                    if not col_year:
+                        st.error(f"No se encontró la columna de Año en la hoja '{sheet_name}'. Columnas encontradas: {list(df_excel.columns)}")
+                        st.stop()
+                    col_year = col_year[0]
+                    df_excel = df_excel.rename(columns={col_year: 'Año'})
+                    
+                    month_map = {
+                        'Enero': 1, 'Febrero': 2, 'Marzo': 3, 'Abril': 4, 'Mayo': 5, 'Junio': 6,
+                        'Julio': 7, 'Agosto': 8, 'Septiembre': 9, 'Octubre': 10, 'Noviembre': 11, 'Diciembre': 12
+                    }
+                    df_excel['mes_num'] = df_excel['Mes'].map(month_map)
+                    df_excel['año_num'] = df_excel['Año'].astype(int)
+                    df_excel['provincia_std'] = df_excel['Provincia'].str.strip().str.upper()
+                    df_excel['mercado_std'] = df_excel['Mercado'].astype(str).str.strip()
+                    df_excel['canton_std'] = df_excel['Cantón'].astype(str).str.strip()
+                    df_excel['pres_std'] = df_excel['Pres.'].astype(str).str.strip()
+                    df_excel['tipo_mercado_std'] = df_excel['Tipo Mercado'].astype(str).str.strip()
+
+                    df_clean = df_excel.dropna(subset=['Producto', 'provincia_std', 'año_num', 'mes_num', 'Promedio de Precio (USD)']).copy()
+
+                    df_clean = df_clean.sort_values(by=['Producto', 'provincia_std', 'canton_std', 'mercado_std', 'pres_std', 'año_num', 'mes_num']).reset_index(drop=True)
+                    df_clean['precio_anterior'] = df_clean.groupby(['Producto', 'provincia_std', 'canton_std', 'mercado_std', 'pres_std'])['Promedio de Precio (USD)'].shift(1)
+                    
+                    df_grouped = df_clean.rename(columns={
+                        'Producto': 'producto_raw',
+                        'Promedio de Precio (USD)': 'precio_actual',
+                        'provincia_std': 'provincia',
+                        'año_num': 'año',
+                        'mes_num': 'mes',
+                        'mercado_std': 'mercado',
+                        'canton_std': 'canton',
+                        'pres_std': 'presentacion',
+                        'tipo_mercado_std': 'tipo_mercado'
+                    })
+                    
+                    df_grouped['variacion'] = ((df_grouped['precio_actual'] - df_grouped['precio_anterior']) / df_grouped['precio_anterior']) * 100
+                    df_grouped['quincena'] = 1
+                    df_grouped['quincena_id'] = df_grouped['año'].astype(str) + "-" + df_grouped['mes'].astype(str).str.zfill(2) + "-Q1"
+                    df_grouped['boletin_num'] = 1
+                    df_grouped['estado_precio'] = np.where(df_grouped['precio_anterior'].isna(), 'parcial', 'completo')
+                    
+                    csv_path = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_crudo_sipa.csv")
+                    prod_to_cat = {}
+                    if os.path.exists(csv_path):
+                        try:
+                            df_old = pd.read_csv(csv_path)
+                            prod_to_cat = df_old.drop_duplicates('producto_raw').set_index('producto_raw')['categoria'].to_dict()
+                        except Exception:
+                            pass
+                    
+                    unique_prods = df_grouped['producto_raw'].unique()
+                    cached_cat = {}
+                    from difflib import get_close_matches
+                    for prod in unique_prods:
+                        if prod in prod_to_cat:
+                            cached_cat[prod] = prod_to_cat[prod]
+                        else:
+                            matches = get_close_matches(prod, list(prod_to_cat.keys()), n=1, cutoff=0.6)
+                            if matches:
+                                cached_cat[prod] = prod_to_cat[matches[0]]
+                            else:
+                                non_perecedero_keywords = ['arroz', 'aceite', 'fideo', 'azúcar', 'café', 'harina', 'sal', 'grano', 'seco', 'lenteja', 'garbanzo']
+                                if any(k in prod.lower() for k in non_perecedero_keywords):
+                                    cached_cat[prod] = 'no_perecedero'
+                                else:
+                                    cached_cat[prod] = 'perecedero'
+                                    
+                    df_grouped['categoria'] = df_grouped['producto_raw'].map(cached_cat)
+                    
+                    st.session_state["df"] = df_grouped
+                    st.session_state["reporte"] = {
+                        "porcentaje_completitud": 100, 
+                        "registros_completos": len(df_grouped), 
+                        "registros_parciales": len(df_grouped[df_grouped['estado_precio'] == 'parcial']), 
+                        "registros_con_problema": 0, 
+                        "quincenas": df_grouped["quincena_id"].nunique(), 
+                        "problemas": []
+                    }
+                    
+                    # Guardar automáticamente el CSV crudo a disco
+                    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+                    dfGuardar = df_grouped.copy()
+                    if os.path.exists(csv_path):
+                        try:
+                            dfExistente = pd.read_csv(csv_path, encoding="utf-8-sig")
+                            dfGuardar = pd.concat([dfExistente, dfGuardar], ignore_index=True)
+                            cols_dedup = [c for c in ["producto_raw", "provincia", "canton", "mercado", "presentacion", "quincena_id"] if c in dfGuardar.columns]
+                            if cols_dedup:
+                                dfGuardar = dfGuardar.drop_duplicates(subset=cols_dedup, keep="last").reset_index(drop=True)
+                        except Exception:
+                            pass
+                    dfGuardar.to_csv(csv_path, index=False, encoding="utf-8-sig")
+                    
+                    st.success("Archivo Excel procesado y guardado automáticamente en disco.")
+                    st.experimental_rerun()
+                except Exception as e:
+                    st.error(f"Error procesando el Excel: {e}")
             
         # --- NUEVO BOTÓN: CARGAR DATOS DESDE DISCO ---
-        # ¡OJO! Debe estar alineado a la misma altura que el "if uploaded_files:" de arriba
         csv_crudo_path = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_crudo_sipa.csv")
         
         if "df" not in st.session_state and os.path.exists(csv_crudo_path):
             st.info("💡 Se detectó un historial de extracciones guardado en disco.")
-            if st.button("Cargar dataset crudo desde disco (Saltar lectura de PDFs)", use_container_width=True):
+            if st.button("Cargar dataset crudo desde disco (Saltar carga de Excel)", use_container_width=True):
                 df_cargado = pd.read_csv(csv_crudo_path, encoding="utf-8-sig")
                 st.session_state["df"] = df_cargado
                 
@@ -392,7 +515,7 @@ def main():
                     if os.path.exists(csv_path):
                         dfExistente = pd.read_csv(csv_path, encoding="utf-8-sig")
                         dfGuardar = pd.concat([dfExistente, dfGuardar], ignore_index=True)
-                        cols_dedup = [c for c in ["producto_raw", "provincia", "quincena_id"] if c in dfGuardar.columns]
+                        cols_dedup = [c for c in ["producto_raw", "provincia", "canton", "mercado", "presentacion", "quincena_id"] if c in dfGuardar.columns]
                         if cols_dedup:
                             dfGuardar = dfGuardar.drop_duplicates(subset=cols_dedup, keep="last").reset_index(drop=True)
                     dfGuardar.to_csv(csv_path, index=False, encoding="utf-8-sig")
@@ -417,34 +540,27 @@ def main():
             if st.button("Ejecutar preprocesamiento",  use_container_width=True, key="btn_ejecutar_preproc"):
                 with st.spinner("Preprocesando datos..."):
                     try:
-                        col_requeridas = ["producto_raw", "precio_actual", "precio_anterior", "provincia", "estado_precio"]
-                        faltantes = [c for c in col_requeridas if c not in df.columns]
-                        if faltantes:
-                            st.error(f"Faltan columnas requeridas: {faltantes}")
+                        csv_crudo_path = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_crudo_sipa.csv")
+                        if not os.path.exists(csv_crudo_path):
+                            st.error("No se encontró el dataset crudo en disco. Por favor, suba un boletín primero.")
                         else:
-                            resultado = preprocesar_datos(df)
+                            df_acumulado = pd.read_csv(csv_crudo_path)
+                            
+                            # Forzar recarga dinámica del módulo preprocesamiento modificado
+                            import importlib
+                            import preprocesamiento
+                            importlib.reload(preprocesamiento)
+                            
+                            resultado = preprocesamiento.preprocesar_datos(df_acumulado)
                             csv_preproc_path = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_preprocesado_sipa.csv")
                             os.makedirs(os.path.dirname(csv_preproc_path), exist_ok=True)
 
                             df_nuevo_preproc = resultado["dataset_final"]
-                            if os.path.exists(csv_preproc_path):
-                                df_existente_preproc = pd.read_csv(csv_preproc_path, encoding="utf-8-sig")
-                                df_nuevo_preproc = pd.concat([df_existente_preproc, df_nuevo_preproc], ignore_index=True)
-                                n_antes = len(df_nuevo_preproc)
-
-                                cols_dedup = [c for c in ["producto", "provincia", "periodo"] if c in df_nuevo_preproc.columns]
-                                if cols_dedup:
-                                    df_nuevo_preproc = df_nuevo_preproc.drop_duplicates(subset=cols_dedup, keep="last").reset_index(drop=True)
-
-                                n_duplicados = n_antes - len(df_nuevo_preproc)
-                                if n_duplicados > 0:
-                                    st.info(f"Se eliminaron {n_duplicados} registros duplicados del dataset preprocesado.")
-                                st.success(f"Dataset preprocesado consolidado: {len(df_nuevo_preproc)} registros totales.")
-
                             df_nuevo_preproc.to_csv(csv_preproc_path, index=False, encoding="utf-8-sig")
                             resultado["dataset_final"] = df_nuevo_preproc
                             st.session_state["resultado_preprocesamiento"] = resultado
-
+                            if "res_entrenamiento" in st.session_state:
+                                del st.session_state["res_entrenamiento"]
                             st.success("Preprocesamiento completado exitosamente y guardado en disco")
                     except Exception as e:
                         st.error(f"Error en preprocesamiento: {e}")
@@ -476,12 +592,6 @@ def main():
                     if st.button("Guardar CSV preprocesado",  key="btn_save_preproc"):
                         os.makedirs(os.path.dirname(csv_path2), exist_ok=True)
                         dfGuardar2 = df_modelo.copy()
-                        if os.path.exists(csv_path2):
-                            dfExistente2 = pd.read_csv(csv_path2, encoding="utf-8-sig")
-                            dfGuardar2 = pd.concat([dfExistente2, dfGuardar2], ignore_index=True)
-                            cols_dedup2 = [c for c in ["producto", "provincia", "periodo"] if c in dfGuardar2.columns]
-                            if cols_dedup2:
-                                dfGuardar2 = dfGuardar2.drop_duplicates(subset=cols_dedup2, keep="last").reset_index(drop=True)
                         dfGuardar2.to_csv(csv_path2, index=False, encoding="utf-8-sig")
                         st.success(f"Guardado: {csv_path2} ({len(dfGuardar2)} registros totales)")
 
@@ -513,8 +623,14 @@ def main():
                     try:
                         le_prod = st.session_state.get("resultado_preprocesamiento", {}).get("le_producto")
                         le_prov = st.session_state.get("resultado_preprocesamiento", {}).get("le_provincia")
+                        encoders = st.session_state.get("resultado_preprocesamiento", {}).get("encoders")
 
-                        res_entrenamiento = ejecutar_entrenamiento_y_evaluacion(df_preproc_disponible, le_prod, le_prov)
+                        # Forzar la recarga de las utilidades de entrenamiento para leer la lista FEATURES nueva
+                        import importlib
+                        import entrenamiento_utils
+                        importlib.reload(entrenamiento_utils)
+
+                        res_entrenamiento = entrenamiento_utils.ejecutar_entrenamiento_y_evaluacion(df_preproc_disponible, le_prod, le_prov, encoders=encoders)
                         st.session_state["res_entrenamiento"] = res_entrenamiento
                         st.success("Entrenamiento finalizado exitosamente")
                     except Exception as e:
@@ -592,7 +708,11 @@ def main():
                                 val_pt1, val_pt2, val_mes,
                                 sel_producto, sel_provincia,
                                 le_prod, le_prov, le_target, modelo, features,
-                                categoria_perecedero=int(rec.get("categoria_perecedero", 0)) if pd.notna(rec.get("categoria_perecedero")) else 0
+                                categoria_perecedero=int(rec.get("categoria_perecedero", 0)) if pd.notna(rec.get("categoria_perecedero")) else 0,
+                                canton_encoded=rec.get("canton_encoded", 0.0),
+                                mercado_encoded=rec.get("mercado_encoded", 0.0),
+                                presentacion_encoded=rec.get("presentacion_encoded", 0.0),
+                                tipo_mercado_encoded=rec.get("tipo_mercado_encoded", 0.0)
                             )
 
                             st.divider()
