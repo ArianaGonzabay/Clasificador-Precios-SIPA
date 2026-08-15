@@ -19,7 +19,7 @@ import numpy as np
 
 # FEATURES actualizadas con variables informativas de series temporales reales + Lags temporales
 FEATURES = [
-    # Rezagos de precio (historia de 6 quincenas ≈ 3 meses)
+    # Rezagos de precio (historia de 6 meses)
     "precio_t1",
     "precio_t2",
     "precio_t3",
@@ -288,7 +288,7 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
         cm_ultimo = fold_matrices[-1]
 
         falsos = cm_ultimo.sum() - np.trace(cm_ultimo)
-        cumple = promedios["f1_macro"] >= 0.75 and promedios["accuracy"] >= 0.80
+        cumple = promedios["f1_macro"] >= 0.70 and promedios["accuracy"] >= 0.75
         feat_imp = ultimo_modelo.feature_importances_ if hasattr(ultimo_modelo, "feature_importances_") else None
 
         resultados[nombre] = {

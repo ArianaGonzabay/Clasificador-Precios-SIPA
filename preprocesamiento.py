@@ -77,7 +77,9 @@ def preprocesar_datos(df):
     estadisticas["registros_invalidos"] = len(df[df["estado_precio"] == "invalido"])
     mapa_categoria = df_limpio.drop_duplicates("producto").set_index("producto")["categoria"].to_dict()
 
-    if "quincena_id" in df_limpio.columns:
+    if "periodo" in df_limpio.columns:
+        df_limpio["periodo"] = df_limpio["periodo"].astype(str)
+    elif "quincena_id" in df_limpio.columns:
         df_limpio["periodo"] = df_limpio["quincena_id"]
     elif "año" in df_limpio.columns and "quincena" in df_limpio.columns:
         df_limpio["periodo"] = df_limpio["año"].astype(str) + "-" + df_limpio["quincena"].astype(str).str.zfill(2)
@@ -281,21 +283,18 @@ def _crear_features(df_pivot, periodos_unicos, mapa_categoria=None):
                 "cruce_medias": round(val_pm2 - val_pm3, 4) if pd.notna(val_pm2) and pd.notna(val_pm3) else 0.0,
             }
 
-            # ── Extraer año / mes / quincena ─────────────────────────────────
+            # ── Extraer año / mes ─────────────────────────────────
             try:
                 partes = periodo.split("-")
-                if len(partes) == 3 and partes[2].startswith("Q"):
+                if len(partes) >= 2:
                     registro["año"] = int(partes[0])
                     registro["mes"] = int(partes[1])
-                    registro["quincena"] = int(partes[2][1:])
                 else:
-                    registro["año"] = int(partes[0])
-                    registro["quincena"] = int(partes[1])
-                    registro["mes"] = 1 if int(partes[1]) == 1 else 2
+                    registro["año"] = np.nan
+                    registro["mes"] = np.nan
             except (ValueError, IndexError):
                 registro["mes"] = np.nan
                 registro["año"] = np.nan
-                registro["quincena"] = np.nan
 
             # ── Variables climáticas (lookup por provincia/año/mes) ──────────
             anio = registro.get("año")
@@ -411,8 +410,9 @@ if __name__ == "__main__":
     print()
     print(df_modelo['comportamiento'].value_counts(normalize=True).round(3) * 100)
 
-    print(df_crudo['quincena_id'].nunique())
-    print(sorted(df_crudo['quincena_id'].unique()))
+    col_id = 'periodo' if 'periodo' in df_crudo.columns else 'quincena_id'
+    print(df_crudo[col_id].nunique())
+    print(sorted(df_crudo[col_id].unique()))
 
     from sklearn.model_selection import TimeSeriesSplit
     tscv = TimeSeriesSplit(n_splits=3)

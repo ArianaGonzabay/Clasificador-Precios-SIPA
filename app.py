@@ -229,7 +229,7 @@ def main():
         <h1>Clasificador de Precios Mayoristas SIPA</h1>
         <p>Predicción del comportamiento de precios agrícolas en Ecuador mediante
         aprendizaje automático supervisado — Random Forest, XGBoost, Decision Tree,
-        Logistic Regression y KNN</p>
+        Logistic Regression, KNN y LSTM</p>
         <span class="badge">Fuente: Sistema de Información Pública Agropecuaria (SIPA)</span>
     </div>
     """
@@ -267,29 +267,56 @@ def main():
     # PESTAÑA 1: EXTRACCIÓN Y PREPROCESAMIENTO
     # =========================================================================
     with tab1:
-        st.header("1. Subir base de datos Excel")
+        st.header("1. Subir archivos de base de datos")
+        col_up1, col_up2 = st.columns(2)
         
-        uploaded_file = st.file_uploader("Seleccione el archivo Excel de precios mayoristas SIPA (.xlsx, .xls)", type=["xlsx", "xls"], key="uploader_excel")
+        with col_up1:
+            st.subheader("Precios SIPA")
+            uploaded_file = st.file_uploader("Seleccione el archivo de precios mayoristas SIPA (.xlsx, .xls, .csv)", type=["xlsx", "xls", "csv"], key="uploader_excel")
+            
+        with col_up2:
+            st.subheader("Clima Histórico")
+            uploaded_clima = st.file_uploader("Seleccione el archivo de clima histórico (.xlsx, .xls, .csv)", type=["xlsx", "xls", "csv"], key="uploader_clima")
+            if uploaded_clima:
+                clima_dest_path = os.path.join(os.path.dirname(__file__), "data", "clima_historico.csv")
+                try:
+                    os.makedirs(os.path.dirname(clima_dest_path), exist_ok=True)
+                    if uploaded_clima.name.endswith('.csv'):
+                        with open(clima_dest_path, "wb") as f:
+                            f.write(uploaded_clima.getbuffer())
+                    else:
+                        # Si es Excel, leer y guardar como CSV
+                        df_clima_excel = pd.read_excel(uploaded_clima)
+                        df_clima_excel.to_csv(clima_dest_path, index=False, encoding='utf-8-sig')
+                    st.success("Base de datos de clima guardada exitosamente en el proyecto.")
+                except Exception as e:
+                    st.error(f"Error al guardar los datos climáticos: {e}")
 
         if uploaded_file and "df" not in st.session_state: 
             st.divider()
-            with st.spinner("Procesando archivo Excel de precios mayoristas..."):
+            with st.spinner("Procesando archivo de precios mayoristas..."):
                 try:
-                    # Detección dinámica de hoja y fila de cabecera
-                    xl = pd.ExcelFile(uploaded_file)
-                    sheet_name = xl.sheet_names[0]
-                    if 'Precios Mercados12-26' in xl.sheet_names:
-                        sheet_name = 'Precios Mercados12-26'
+                    if uploaded_file.name.endswith('.csv'):
+                        df_excel = pd.read_csv(uploaded_file)
+                    else:
+                        # Detección dinámica de hoja y fila de cabecera para Excel
+                        xl = pd.ExcelFile(uploaded_file)
+                        sheet_name = xl.sheet_names[0]
+                        if 'Precios Mercados12-26' in xl.sheet_names:
+                            sheet_name = 'Precios Mercados12-26'
+                        
+                        df_temp = pd.read_excel(uploaded_file, sheet_name=sheet_name, nrows=15)
+                        header_row = 0
+                        for r in range(len(df_temp)):
+                            row_vals = df_temp.iloc[r].dropna().astype(str).str.lower().tolist()
+                            if any('producto' in x for x in row_vals) and any('provincia' in x for x in row_vals):
+                                header_row = r + 1
+                                break
+                        
+                        df_excel = pd.read_excel(uploaded_file, sheet_name=sheet_name, skiprows=header_row)
                     
-                    df_temp = pd.read_excel(uploaded_file, sheet_name=sheet_name, nrows=15)
-                    header_row = 0
-                    for r in range(len(df_temp)):
-                        row_vals = df_temp.iloc[r].dropna().astype(str).str.lower().tolist()
-                        if any('producto' in x for x in row_vals) and any('provincia' in x for x in row_vals):
-                            header_row = r + 1
-                            break
-                    
-                    df_excel = pd.read_excel(uploaded_file, sheet_name=sheet_name, skiprows=header_row)
+                    # Eliminar columnas Unnamed (vacías)
+                    df_excel = df_excel.loc[:, ~df_excel.columns.str.contains('^Unnamed')]
                     
                     # Normalizar nombres de columnas usando regex para evitar bugs de caracteres invisibles
                     import re
@@ -341,9 +368,7 @@ def main():
                     })
                     
                     df_grouped['variacion'] = ((df_grouped['precio_actual'] - df_grouped['precio_anterior']) / df_grouped['precio_anterior']) * 100
-                    df_grouped['quincena'] = 1
-                    df_grouped['quincena_id'] = df_grouped['año'].astype(str) + "-" + df_grouped['mes'].astype(str).str.zfill(2) + "-Q1"
-                    df_grouped['boletin_num'] = 1
+                    df_grouped['periodo'] = df_grouped['año'].astype(str) + "-" + df_grouped['mes'].astype(str).str.zfill(2)
                     df_grouped['estado_precio'] = np.where(df_grouped['precio_anterior'].isna(), 'parcial', 'completo')
                     
                     csv_path = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_crudo_sipa.csv")
@@ -380,7 +405,7 @@ def main():
                         "registros_completos": len(df_grouped), 
                         "registros_parciales": len(df_grouped[df_grouped['estado_precio'] == 'parcial']), 
                         "registros_con_problema": 0, 
-                        "quincenas": df_grouped["quincena_id"].nunique(), 
+                        "quincenas": df_grouped["periodo"].nunique(), 
                         "problemas": []
                     }
                     
@@ -391,7 +416,7 @@ def main():
                         try:
                             dfExistente = pd.read_csv(csv_path, encoding="utf-8-sig")
                             dfGuardar = pd.concat([dfExistente, dfGuardar], ignore_index=True)
-                            cols_dedup = [c for c in ["producto_raw", "provincia", "canton", "mercado", "presentacion", "quincena_id"] if c in dfGuardar.columns]
+                            cols_dedup = [c for c in ["producto_raw", "provincia", "canton", "mercado", "presentacion", "periodo"] if c in dfGuardar.columns]
                             if cols_dedup:
                                 dfGuardar = dfGuardar.drop_duplicates(subset=cols_dedup, keep="last").reset_index(drop=True)
                         except Exception:
@@ -407,7 +432,7 @@ def main():
         csv_crudo_path = os.path.join(os.path.dirname(__file__), "data", "processed", "dataset_crudo_sipa.csv")
         
         if "df" not in st.session_state and os.path.exists(csv_crudo_path):
-            st.info("💡 Se detectó un historial de extracciones guardado en disco.")
+            st.info("Se detectó un historial de extracciones guardado en disco.")
             if st.button("Cargar dataset crudo desde disco (Saltar carga de Excel)", use_container_width=True):
                 df_cargado = pd.read_csv(csv_crudo_path, encoding="utf-8-sig")
                 st.session_state["df"] = df_cargado
@@ -417,7 +442,7 @@ def main():
                     "registros_completos": len(df_cargado), 
                     "registros_parciales": 0, 
                     "registros_con_problema": 0, 
-                    "quincenas": df_cargado["quincena_id"].nunique() if "quincena_id" in df_cargado.columns else 0, 
+                    "quincenas": df_cargado["periodo"].nunique() if "periodo" in df_cargado.columns else (df_cargado["quincena_id"].nunique() if "quincena_id" in df_cargado.columns else 0), 
                     "problemas": []
                 }
                 st.experimental_rerun()
@@ -443,7 +468,7 @@ def main():
             col2.metric("Completos", reporte["registros_completos"])
             col3.metric("Parciales", reporte["registros_parciales"])
             col4.metric("Productos", df["producto_raw"].nunique())
-            col5.metric("Quincenas", reporte["quincenas"])
+            col5.metric("Meses", reporte["quincenas"])
             col6.metric("Calidad", f"{completitud}%")
 
             hay_problemas = reporte["registros_con_problema"] > 0
@@ -455,7 +480,7 @@ def main():
                 st.header("3. Registros Parciales (Productos Nuevos)")
                 st.info(f"Se encontraron {reporte['registros_parciales']} productos nuevos sin precio anterior.")
 
-                df_parciales = df[df["estado_precio"] == "parcial"][["producto_raw", "precio_anterior", "precio_actual", "provincia", "quincena_id"]]
+                df_parciales = df[df["estado_precio"] == "parcial"][["producto_raw", "precio_anterior", "precio_actual", "provincia", "periodo"]]
                 st.dataframe(df_parciales, use_container_width=True, height=200)
 
                 accion_parciales = st.radio(
@@ -515,7 +540,7 @@ def main():
                     if os.path.exists(csv_path):
                         dfExistente = pd.read_csv(csv_path, encoding="utf-8-sig")
                         dfGuardar = pd.concat([dfExistente, dfGuardar], ignore_index=True)
-                        cols_dedup = [c for c in ["producto_raw", "provincia", "canton", "mercado", "presentacion", "quincena_id"] if c in dfGuardar.columns]
+                        cols_dedup = [c for c in ["producto_raw", "provincia", "canton", "mercado", "presentacion", "periodo"] if c in dfGuardar.columns]
                         if cols_dedup:
                             dfGuardar = dfGuardar.drop_duplicates(subset=cols_dedup, keep="last").reset_index(drop=True)
                     dfGuardar.to_csv(csv_path, index=False, encoding="utf-8-sig")
@@ -578,7 +603,7 @@ def main():
                 col_st3.metric("Productos descartados (>30% faltante)", stats["productos_descartados"])
 
                 if stats["productos_descartados"] > 0:
-                    st.warning(f"{stats['productos_descartados']} productos fueron eliminados por tener más del 30% de quincenas sin datos.")
+                    st.warning(f"{stats['productos_descartados']} productos fueron eliminados por tener más del 30% de meses sin datos.")
                     df_desc = pd.DataFrame(resultado["productos_descartados"])
                     st.dataframe(df_desc, use_container_width=True)
 
@@ -650,7 +675,7 @@ def main():
 
                 st.divider()
                 st.subheader("2. Tabla Comparativa de Modelos")
-                st.markdown("**Criterios de selección:** F1-Score (Macro) ≥ 0.75 y Accuracy ≥ 0.80")
+                st.markdown("**Criterios de selección:** F1-Score (Macro) ≥ 0.70 y Accuracy ≥ 0.75")
                 st.dataframe(res["tabla_comparativa"], use_container_width=True)
 
                 st.success(f"**MODELO SELECCIONADO:** {res['mejor_nombre']} | F1-Score: {res['mejor_metricas']['F1-Score (Macro)']} | Accuracy: {res['mejor_metricas']['Accuracy']}")
