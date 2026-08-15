@@ -268,6 +268,7 @@ def prediccion_individual():
                 mercado_encoded=registro.get("mercado_encoded", 0.0),
                 presentacion_encoded=registro.get("presentacion_encoded", 0.0),
                 tipo_mercado_encoded=registro.get("tipo_mercado_encoded", 0.0),
+                registro_dict=registro,
             )
             resultado = {"clase": pred_label, "probs": probs}
         else:
@@ -308,6 +309,53 @@ def prediccion_resultados_lote():
     modelo, le_target, le_prod, le_prov, features = cargar_modelo_y_artefactos(MODELS_DIR)
     productos = list(le_prod.classes_) if le_prod is not None else []
     provincias = list(le_prov.classes_) if le_prov is not None else []
+    
+    df_lote_clean = None
+    if df_predicho is not None:
+        # Filtrar para quedarse únicamente con el registro más reciente
+        # para cada combinación de Producto y Provincia (igual al dropdown individual).
+        cols_agrupacion = ['producto', 'provincia']
+        cols_existentes_agrup = [c for c in cols_agrupacion if c in df_predicho.columns]
+        
+        df_ordenado = df_predicho.sort_values('periodo')
+        df_ultimos = df_ordenado.drop_duplicates(subset=cols_existentes_agrup, keep='last').copy()
+        
+        # Ordenar alfabéticamente por producto, provincia, mercado, etc.
+        df_ultimos = df_ultimos.sort_values(by=cols_existentes_agrup)
+
+        cols_base = ['producto', 'provincia', 'canton', 'mercado', 'presentacion', 'periodo', 'precio_actual', 'prediccion']
+        cols_presentes = [c for c in cols_base if c in df_ultimos.columns]
+        df_lote_clean = df_ultimos[cols_presentes].copy()
+        
+        # Calcular columna de probabilidad única basada en la predicción elegida
+        if 'prob_Alza' in df_predicho.columns:
+            def obtener_prob(row):
+                pred = row['prediccion']
+                col_prob = f"prob_{pred}"
+                if col_prob in df_predicho.columns:
+                    val = row[col_prob]
+                    return f"{round(val, 1)}%"
+                return "-"
+            df_lote_clean['Probabilidad'] = df_ultimos.apply(obtener_prob, axis=1)
+            
+        # Renombrar columnas para que se vean amigables en la tabla
+        renombres = {
+            'producto': 'Producto',
+            'provincia': 'Provincia',
+            'canton': 'Cantón',
+            'mercado': 'Mercado',
+            'presentacion': 'Presentación',
+            'periodo': 'Período',
+            'precio_actual': 'Precio Actual',
+            'prediccion': 'Predicción'
+        }
+        df_lote_clean = df_lote_clean.rename(columns=renombres)
+        
+        # Formatear la columna de Precio Actual como moneda
+        if 'Precio Actual' in df_lote_clean.columns:
+            df_lote_clean['Precio Actual'] = df_lote_clean['Precio Actual'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "-")
+            
+
     return render_template(
         "prediccion.html",
         modelo_listo=(modelo is not None),
@@ -316,7 +364,7 @@ def prediccion_resultados_lote():
         resultado=None,
         registro=None,
         seleccion=None,
-        df_lote=df_predicho.head(200) if df_predicho is not None else None,
+        df_lote=df_lote_clean,
     )
 
 

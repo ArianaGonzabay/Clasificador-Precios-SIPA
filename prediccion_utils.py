@@ -56,7 +56,7 @@ def obtener_ultimo_registro(df, producto, provincia):
     return df_sub.iloc[-1].to_dict()
 
 
-def predecir_registro(precio_t1, precio_t2, mes, producto, provincia, le_prod, le_prov, le_target, modelo, features, categoria_perecedero=0, canton_encoded=0.0, mercado_encoded=0.0, presentacion_encoded=0.0, tipo_mercado_encoded=0.0):
+def predecir_registro(precio_t1, precio_t2, mes, producto, provincia, le_prod, le_prov, le_target, modelo, features, categoria_perecedero=0, canton_encoded=0.0, mercado_encoded=0.0, presentacion_encoded=0.0, tipo_mercado_encoded=0.0, registro_dict=None):
     """
     Recibe datos de un producto y sus precios anteriores para realizar la predicción de comportamiento.
     """
@@ -83,6 +83,13 @@ def predecir_registro(precio_t1, precio_t2, mes, producto, provincia, le_prod, l
         "tipo_mercado_encoded": tipo_mercado_encoded,
         "categoria_perecedero": int(categoria_perecedero),
     }
+
+    # Si se proporciona el diccionario completo preprocesado de la base de datos,
+    # actualizamos el diccionario para contar con las variables reales (ej. precio_t3, clima, etc.)
+    if registro_dict is not None:
+        for k, v in registro_dict.items():
+            if pd.notna(v):
+                row_dict[k] = v
     
     # 1. Inyectar variables trigonométricas (Tiempo cíclico)
     mes_actual = row_dict.get("mes", 1)
@@ -102,9 +109,13 @@ def predecir_registro(precio_t1, precio_t2, mes, producto, provincia, le_prod, l
     for i in range(1, 7):
         row_dict.setdefault(f"var_lag_{i}", 0.0)
 
-    # 4. Construir el DataFrame con las features base + los lags de secuencia temporal (las 17 variables exactas)
+    # 4. Construir el DataFrame con las features base + los lags de secuencia temporal
     lags_cols = [f"var_lag_{i}" for i in range(1, 7)]
     full_features = features + lags_cols
+
+    # Garantizar que todas las columnas esperadas por el modelo existan en el diccionario
+    for feat in full_features:
+        row_dict.setdefault(feat, 0.0)
 
     X_single = pd.DataFrame([row_dict])[full_features]
     
@@ -126,7 +137,25 @@ def predecir_dataframe(df, modelo, le_target, features):
     df_eval = df.dropna(subset=["precio_t2", "variacion_t2_t1", "promedio_movil_2q", "promedio_movil_3q"]).copy()
     if "categoria_perecedero" not in df_eval.columns:
         df_eval["categoria_perecedero"] = 0
-    X = df_eval[features]
+
+    if "mes_seno" not in df_eval.columns and "mes" in df_eval.columns:
+        df_eval["mes_seno"] = np.sin(2 * np.pi * df_eval["mes"] / 12)
+    if "mes_coseno" not in df_eval.columns and "mes" in df_eval.columns:
+        df_eval["mes_coseno"] = np.cos(2 * np.pi * df_eval["mes"] / 12)
+
+    # Construir la lista completa de columnas incluyendo lags
+    lags_cols = [f"var_lag_{i}" for i in range(1, 7)]
+    full_features = list(features)
+    for col in lags_cols:
+        if col not in full_features:
+            full_features.append(col)
+
+    # Por seguridad, si falta cualquier otra columna requerida por el modelo, la rellenamos con 0.0
+    for col in full_features:
+        if col not in df_eval.columns:
+            df_eval[col] = 0.0
+
+    X = df_eval[full_features]
 
     preds_idx = modelo.predict(X)
     df_eval["prediccion"] = le_target.inverse_transform(preds_idx)

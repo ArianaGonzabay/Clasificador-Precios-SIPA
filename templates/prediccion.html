@@ -9,7 +9,7 @@
   <span class="etapa activa"><span class="etapa-numero">3</span>Predicción</span>
 </div>
 
-<h1>Clasificación y predicción de precios</h1>
+<h1>Predicción del comportamiento de precios</h1>
 
 {% if not modelo_listo %}
 <div class="banner-resultado info">
@@ -44,12 +44,14 @@
   <div class="tarjeta">
     <h3>Clasificación en lote</h3>
     <p class="texto-secundario">Clasifica todo el dataset preprocesado de una sola vez.</p>
-    <form action="{{ url_for('prediccion_lote') }}" method="post" data-carga-mensaje="Clasificando todo el dataset…">
-      <button type="submit" class="boton boton-secundario">Ejecutar clasificación en lote</button>
-    </form>
-    {% if df_lote is not none %}
-    <a href="{{ url_for('descargar_lote') }}" class="boton boton-secundario boton-enlace">Descargar predicciones (CSV)</a>
-    {% endif %}
+    <div style="display: flex; gap: 0.6rem; flex-wrap: wrap;">
+      <form action="{{ url_for('prediccion_lote') }}" method="post" data-carga-mensaje="Clasificando todo el dataset…">
+        <button type="submit" class="boton boton-secundario">Ejecutar clasificación en lote</button>
+      </form>
+      {% if df_lote is not none %}
+      <a href="{{ url_for('descargar_lote') }}" class="boton boton-secundario">Descargar predicciones (CSV)</a>
+      {% endif %}
+    </div>
   </div>
 </div>
 
@@ -58,9 +60,9 @@
   <h2>Datos históricos detectados</h2>
   <div class="grid-metricas">
     <div class="metrica"><span class="metrica-valor">{{ registro.periodo }}</span><span class="metrica-etiqueta">Período</span></div>
-    <div class="metrica"><span class="metrica-valor">{{ '$%.2f'|format(registro.precio_t1) if registro.precio_t1 == registro.precio_t1 else 'N/A' }}</span><span class="metrica-etiqueta">Precio t-1</span></div>
-    <div class="metrica"><span class="metrica-valor">{{ '$%.2f'|format(registro.precio_t2) if registro.precio_t2 == registro.precio_t2 else 'N/A' }}</span><span class="metrica-etiqueta">Precio t-2</span></div>
-    <div class="metrica"><span class="metrica-valor">{{ '$%.2f'|format(registro.precio_actual) if registro.precio_actual == registro.precio_actual else 'N/A' }}</span><span class="metrica-etiqueta">Precio boletín</span></div>
+    <div class="metrica"><span class="metrica-valor">{{ '$%.2f'|format(registro.precio_t1) if registro.precio_t1 == registro.precio_t1 else 'N/A' }}</span><span class="metrica-etiqueta">Precio mes anterior</span></div>
+    <div class="metrica"><span class="metrica-valor">{{ '$%.2f'|format(registro.precio_t2) if registro.precio_t2 == registro.precio_t2 else 'N/A' }}</span><span class="metrica-etiqueta">Precio hace 2 meses</span></div>
+    <div class="metrica"><span class="metrica-valor">{{ '$%.2f'|format(registro.precio_actual) if registro.precio_actual == registro.precio_actual else 'N/A' }}</span><span class="metrica-etiqueta">Precio actual</span></div>
   </div>
 </section>
 {% endif %}
@@ -90,7 +92,13 @@
 {% if df_lote is not none %}
 <section class="seccion">
   <h2>Resultados de clasificación en lote</h2>
-  <p class="texto-secundario">Mostrando los primeros 200 registros clasificados.</p>
+  <p class="texto-secundario">Mostrando {{ df_lote|length }} registros consolidados (último período registrado).</p>
+  
+  <div style="margin-bottom: 1.2rem;">
+    <input type="text" id="buscador-productos" placeholder="Buscar por producto..." 
+           style="width: 100%; max-width: 320px; padding: 0.55rem 0.8rem; border: 1px solid var(--linea); border-radius: 8px; font-family: 'Inter', sans-serif; font-size: 0.9rem;">
+  </div>
+
   <div class="tabla-envoltorio">
     <table class="tabla-datos">
       <thead>
@@ -104,6 +112,25 @@
     </table>
   </div>
 </section>
+
+<script>
+document.getElementById('buscador-productos').addEventListener('keyup', function() {
+  const query = this.value.toLowerCase().trim();
+  const rows = document.querySelectorAll('.tabla-datos tbody tr');
+  rows.forEach(row => {
+    // La primera columna (index 0) es el Producto
+    const productoTd = row.cells[0];
+    if (productoTd) {
+      const texto = productoTd.textContent.toLowerCase();
+      if (texto.includes(query)) {
+        row.style.display = '';
+      } else {
+        row.style.display = 'none';
+      }
+    }
+  });
+});
+</script>
 {% endif %}
 
 {% endif %}

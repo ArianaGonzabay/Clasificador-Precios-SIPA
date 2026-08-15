@@ -434,6 +434,8 @@ p.texto-aviso { font-style: italic; }
 /* ---------------------------------------------------------------------- */
 
 .tabla-envoltorio {
+  max-height: 500px;
+  overflow-y: auto;
   overflow-x: auto;
   border: 1px solid var(--linea);
   border-radius: 10px;
@@ -443,7 +445,6 @@ table.tabla-datos {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.82rem;
-  white-space: nowrap;
 }
 table.tabla-datos thead th {
   background: var(--verde-cultivo);
