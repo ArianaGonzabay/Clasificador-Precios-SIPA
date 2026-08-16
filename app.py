@@ -40,10 +40,8 @@ os.makedirs(MODELS_DIR, exist_ok=True)
 app = Flask(__name__)
 app.secret_key = "sipa-clasificador-dev"  # solo se usa para los mensajes flash
 
-# Caché en memoria de resultados que no se guardan tal cual en disco
-# (tabla comparativa de modelos, dataset preprocesado recién calculado, etc.)
-# Es un único proceso de un solo usuario -- equivalente a lo que hacía
-# st.session_state en la versión de Streamlit.
+# Caché en memoria para almacenar las estadísticas y reportes temporales generados en caliente
+# (por ejemplo: la tabla comparativa de modelos y matrices de confusión calculadas durante el entrenamiento).
 CACHE = {
     "reporte_extraccion": None,
     "resultado_preprocesamiento": None,

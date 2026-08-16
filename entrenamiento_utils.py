@@ -136,7 +136,7 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
     le_target = LabelEncoder()
     y_encoded = le_target.fit_transform(y)
 
-    # --- CLASES LSTM ---
+    # --- Arquitectura de Red Neuronal Recurrente LSTM en PyTorch ---
     class LSTMClasificadorModule(nn.Module):
         def __init__(self, input_dim=43, hidden_units=128, num_classes=3):
             super().__init__()
@@ -153,7 +153,7 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
             out = self.fc2(out)
             return out
 
-    class LSTMModeloProfesor(BaseEstimator):
+    class LSTMClassifierWrapper(BaseEstimator):
         def __init__(self, look_back=1, epochs=75, lr=0.005):
             self.look_back = look_back
             self.epochs = epochs
@@ -175,11 +175,12 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
                 pesos_clase_unicas.append(pesos_c[y == c][0])
             pesos_tensor = torch.FloatTensor(pesos_clase_unicas)
             
+            # Inicializar modulo LSTM y definir la función de pérdida con pesos balanceados
             self.model = LSTMClasificadorModule(input_dim=X_scaled.shape[1], hidden_units=128, num_classes=3)
             criterion = nn.CrossEntropyLoss(weight=pesos_tensor)
             optimizer = optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=1e-3)
             
-            # Simple decaimiento de Learning Rate por época
+            # Planificador de tasa de aprendizaje coseno (Cosine Annealing) para regularizar la convergencia
             scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.epochs)
             
             self.model.train()
@@ -230,7 +231,7 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
         "Decision Tree": DecisionTreeClassifier(max_depth=12, min_samples_split=5, random_state=42, class_weight="balanced"),
         "Logistic Regression": LogisticRegression(C=1.0, solver="lbfgs", max_iter=1000, random_state=42, class_weight="balanced"),
         "KNN": KNeighborsClassifier(n_neighbors=7, weights="distance"),
-        "LSTM": LSTMModeloProfesor(look_back=1, epochs=75, lr=0.005),
+        "LSTM": LSTMClassifierWrapper(look_back=1, epochs=75, lr=0.005),
     }
 
     # 7. ENTRENAMIENTO Y EVALUACIÓN
@@ -262,9 +263,9 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
                 try:
                     modelo = clone(modelo_base)
                 except Exception:
-                    modelo = LSTMModeloProfesor(look_back=2, epochs=20, lr=0.01)
+                    modelo = LSTMClassifierWrapper(look_back=2, epochs=20, lr=0.01)
             else:
-                modelo = LSTMModeloProfesor(look_back=2, epochs=20, lr=0.01)
+                modelo = LSTMClassifierWrapper(look_back=2, epochs=20, lr=0.01)
 
             if nombre == "XGBoost":
                 pesos_train = compute_sample_weight("balanced", y_train)

@@ -1,8 +1,8 @@
 """
-Ingesta del archivo de precios mayoristas SIPA (Excel o CSV).
+Módulo de Ingesta y Consolidación de Precios Mayoristas del SIPA.
 
-Esta es la misma lógica que ya tenían en la pestaña 1 de app.py (Streamlit),
-extraída a un módulo propio para que las rutas de Flask solo la invoquen.
+Procesa archivos en formato Excel (.xlsx) o CSV (.csv) cargados desde la interfaz web,
+normalizando las cabeceras e integrando la información histórica de forma incremental.
 """
 
 import os

@@ -3,11 +3,14 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 
-# ─── Ruta al CSV de clima histórico ──────────────────────────────────────────
+# Definición de ruta local para los datos históricos del clima consolidado
 _CLIMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'clima_historico.csv')
 
 def _cargar_clima():
-    """Carga el CSV climático y devuelve un dict {(provincia_upper, año, mes): (temp, precip)}."""
+    """
+    Carga la base de datos climática y calcula retardos temporales (lags) y acumulados.
+    Devuelve un diccionario estructurado {(provincia, año, mes): métricas_clima} para consultas eficientes.
+    """
     if not os.path.exists(_CLIMA_PATH):
         return {}
     df = pd.read_csv(_CLIMA_PATH)
@@ -20,7 +23,7 @@ def _cargar_clima():
     df['precip_lag1'] = df.groupby('provincia')['precip'].shift(1)
     df['precip_lag2'] = df.groupby('provincia')['precip'].shift(2)
     
-    # NUEVO: Lluvia acumulada de los últimos 3 meses (actual + lag1 + lag2)
+    # Cálculo de precipitación acumulada móvil trimestral para modelar impactos climáticos prolongados
     df['precip_acc3'] = df['precip'] + df['precip_lag1'].fillna(0) + df['precip_lag2'].fillna(0)
     
     lookup = {}
@@ -37,7 +40,8 @@ def _cargar_clima():
         }
     return lookup
 
-_CLIMA_LOOKUP = None   # cargado una sola vez en memoria
+# Estructura de caché en memoria para evitar lecturas recurrentes del archivo de clima en disco
+_CLIMA_LOOKUP = None
 
 def limpiar_nombre_producto(texto):
     import re
