@@ -26,7 +26,6 @@ if cols_clima_previas:
     df_preproc = df_preproc.drop(columns=cols_clima_previas)
     print(f"Se eliminaron columnas climáticas previas: {cols_clima_previas}")
 
-# ─── Extraer año y mes del campo 'periodo' (ej: "2015-03-Q1" → año=2015, mes=3) ───
 if 'periodo' in df_preproc.columns:
     df_preproc['_año_ext'] = df_preproc['periodo'].str.split('-').str[0].astype(int)
     df_preproc['_mes_ext'] = df_preproc['periodo'].str.split('-').str[1].astype(int)
@@ -37,11 +36,9 @@ else:
     raise ValueError("El dataset preprocesado no tiene columna 'periodo', 'año' o 'mes'.")
 
 # ─── Normalizar nombre de provincia en clima ──────────────────────────────────
-# Asegurarse que ambas tablas usen la misma capitalización
 df_clima['provincia_norm'] = df_clima['provincia'].str.strip().str.upper()
 df_preproc['_prov_norm'] = df_preproc['provincia'].str.strip().str.upper()
 
-# Correcciones de nombres especiales
 rename_clima = {
     'CANAR': 'CAÑAR',
     'PERU': 'PERU',  # Keep as is, some products come from Perú
@@ -49,7 +46,6 @@ rename_clima = {
 df_clima['provincia_norm'] = df_clima['provincia_norm'].replace(rename_clima)
 
 # ─── Calcular rezagos climáticos en el dataset de clima (por provincia) ───────
-# Ordenar por provincia, año, mes para calcular correctamente los lags
 df_clima_sorted = df_clima.sort_values(['provincia_norm', 'año', 'mes']).copy()
 df_clima_sorted['temp_lag1'] = df_clima_sorted.groupby('provincia_norm')['temp'].shift(1)
 df_clima_sorted['temp_lag2'] = df_clima_sorted.groupby('provincia_norm')['temp'].shift(2)
@@ -67,7 +63,6 @@ df_merged = df_preproc.merge(
     how='left'
 )
 
-# Renombrar para el modelo
 df_merged = df_merged.rename(columns={
     'temp': 'clima_temp_media',
     'precip': 'clima_precipitacion_mm',
@@ -77,10 +72,8 @@ df_merged = df_merged.rename(columns={
     'precip_lag2': 'clima_precip_lag2',
 })
 
-# Eliminar columnas auxiliares
 df_merged = df_merged.drop(columns=['_año_ext', '_mes_ext', '_prov_norm'], errors='ignore')
 
-# Rellenar NaN de clima con medianas por provincia
 for col in ['clima_temp_media', 'clima_precipitacion_mm', 'clima_temp_lag1', 'clima_temp_lag2', 'clima_precip_lag1', 'clima_precip_lag2']:
     df_merged[col] = df_merged.groupby('provincia')[col].transform(lambda x: x.fillna(x.median()))
     df_merged[col] = df_merged[col].fillna(df_merged[col].median())

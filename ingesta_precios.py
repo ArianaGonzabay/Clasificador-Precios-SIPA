@@ -58,7 +58,6 @@ def procesar_archivo_precios(file_storage, csv_crudo_path):
         file_storage.stream.seek(0)
         df_excel = pd.read_excel(file_storage, sheet_name=sheet_name, skiprows=header_row)
 
-    # Eliminar columnas Unnamed (vacías)
     df_excel = df_excel.loc[:, ~df_excel.columns.str.contains("^Unnamed")]
 
     df_excel.columns = [_limpiar_cabecera(c) for c in df_excel.columns]
@@ -105,7 +104,6 @@ def procesar_archivo_precios(file_storage, csv_crudo_path):
     df_grouped["periodo"] = df_grouped["año"].astype(str) + "-" + df_grouped["mes"].astype(str).str.zfill(2)
     df_grouped["estado_precio"] = np.where(df_grouped["precio_anterior"].isna(), "parcial", "completo")
 
-    # Categoría (perecedero / no_perecedero), reutilizando lo ya guardado en disco cuando existe
     prod_to_cat = {}
     if os.path.exists(csv_crudo_path):
         try:
@@ -131,7 +129,6 @@ def procesar_archivo_precios(file_storage, csv_crudo_path):
 
     df_grouped["categoria"] = df_grouped["producto_raw"].map(cached_cat)
 
-    # Guardar en disco, fusionando con el histórico existente sin duplicar
     os.makedirs(os.path.dirname(csv_crudo_path), exist_ok=True)
     df_guardar = df_grouped.copy()
     if os.path.exists(csv_crudo_path):

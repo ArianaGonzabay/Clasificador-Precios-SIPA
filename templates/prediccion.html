@@ -74,9 +74,9 @@
   <div class="tarjeta-resultado tarjeta-{{ clave_clase }}">
     <strong>{{ resultado.clase|upper }}</strong>
     <p>
-      {% if resultado.clase == 'Alza' %}Pronóstico de incremento de precio &gt; +3%
-      {% elif resultado.clase == 'Caída' %}Pronóstico de reducción de precio &lt; -3%
-      {% else %}El precio se mantendrá en el rango de &plusmn;3%{% endif %}
+      {% if resultado.clase == 'Alza' %}Pronóstico de incremento de precio &gt; +7%
+      {% elif resultado.clase == 'Caída' %}Pronóstico de reducción de precio &lt; -7%
+      {% else %}El precio se mantendrá en el rango de &plusmn;7%{% endif %}
     </p>
   </div>
   {% if resultado.probs %}

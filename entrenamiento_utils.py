@@ -17,7 +17,6 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 
-# FEATURES actualizadas con variables informativas de series temporales reales + Lags temporales
 FEATURES = [
     # Rezagos de precio (historia de 6 meses)
     "precio_t1",
@@ -64,7 +63,6 @@ FEATURES = [
 TARGET = "comportamiento"
 FEATURES_REZAGO = ["precio_t2", "variacion_t2_t1", "promedio_movil_2q", "promedio_movil_3q"]
 
-# Modelos que necesitan features escaladas (sensibles a la magnitud de las variables)
 MODELOS_QUE_NECESITAN_ESCALADO = {"Logistic Regression"}
 
 
@@ -74,7 +72,6 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
     entrenamiento de los modelos, cálculo de métricas y guardado del mejor modelo.
     """
     
-    # 1. VALIDACIÓN Y CÁLCULOS AL VUELO (Ejecutado una sola vez y de forma limpia)
     if "categoria_perecedero" not in df_final.columns:
         print("[AVISO] 'categoria_perecedero' no está en el dataset. Usando 0.")
         df_final = df_final.copy()
@@ -104,24 +101,20 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
             0.0
         )
 
-    # 2. ORDENAMIENTO ESTRICTO
     if "periodo" in df_final.columns:
         df_final = df_final.sort_values(by=["periodo", "producto", "provincia"]).reset_index(drop=True)
     elif "quincena_id" in df_final.columns:
         df_final = df_final.sort_values(by=["quincena_id", "producto", "provincia"]).reset_index(drop=True)
 
-    # 3. LIMPIEZA DE FILAS SIN REZAGO
     filas_antes = len(df_final)
     df_limpio = df_final.dropna(subset=FEATURES_REZAGO).copy()
     
-    # 4. CODIFICACIÓN CÍCLICA DEL TIEMPO
     df_limpio["mes_seno"] = np.sin(2 * np.pi * df_limpio["mes"] / 12)
     df_limpio["mes_coseno"] = np.cos(2 * np.pi * df_limpio["mes"] / 12)
     
     filas_despues = len(df_limpio)
     filas_eliminadas = filas_antes - filas_despues
-
-    # 5. CREACIÓN DE LAGS TEMPORALES
+    
     df_limpio = df_limpio.copy()
     lags_cols = []
     for i in range(1, 7):
@@ -135,8 +128,7 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
 
     le_target = LabelEncoder()
     y_encoded = le_target.fit_transform(y)
-
-    # --- Arquitectura de Red Neuronal Recurrente LSTM en PyTorch ---
+    
     class LSTMClasificadorModule(nn.Module):
         def __init__(self, input_dim=43, hidden_units=128, num_classes=3):
             super().__init__()
@@ -175,12 +167,10 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
                 pesos_clase_unicas.append(pesos_c[y == c][0])
             pesos_tensor = torch.FloatTensor(pesos_clase_unicas)
             
-            # Inicializar modulo LSTM y definir la función de pérdida con pesos balanceados
             self.model = LSTMClasificadorModule(input_dim=X_scaled.shape[1], hidden_units=128, num_classes=3)
             criterion = nn.CrossEntropyLoss(weight=pesos_tensor)
             optimizer = optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=1e-3)
             
-            # Planificador de tasa de aprendizaje coseno (Cosine Annealing) para regularizar la convergencia
             scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.epochs)
             
             self.model.train()
@@ -204,7 +194,6 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
                 preds = torch.argmax(preds_logits, dim=1).numpy()
             return preds
 
-    # 6. CONFIGURACIÓN DE MODELOS
     modelos_config = {
         "Random Forest": RandomForestClassifier(
             n_estimators=300,
@@ -234,8 +223,6 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
         "LSTM": LSTMClassifierWrapper(look_back=1, epochs=75, lr=0.005),
     }
 
-    # 7. ENTRENAMIENTO Y EVALUACIÓN
-    # 5 folds con 50k registros da estimaciones estadísticamente robustas
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
     resultados = {}
     candidatos = []
@@ -325,7 +312,6 @@ def ejecutar_entrenamiento_y_evaluacion(df_final, le_producto=None, le_provincia
     mejor_modelo = resultados[mejor_nombre]["modelo_entrenado"]
     mejor_scaler = resultados[mejor_nombre]["scaler"]
 
-    # 8. GUARDAR ARTEFACTOS
     models_dir = os.path.join(os.path.dirname(__file__), "data", "models")
     os.makedirs(models_dir, exist_ok=True)
 

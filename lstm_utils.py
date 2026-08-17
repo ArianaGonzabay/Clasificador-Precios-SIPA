@@ -22,9 +22,8 @@ from tensorflow.keras.layers import LSTM, Dense, Dropout, Masking
 from tensorflow.keras.utils import to_categorical
 from tensorflow.keras.callbacks import EarlyStopping
 
-VENTANA = 6          # cuántas quincenas pasadas usa como contexto (ajustable: prueba 4, 6, 8)
-UMBRAL_PCT = 3.0      # mismo umbral ±3% que el resto del proyecto
-
+VENTANA = 6         
+UMBRAL_PCT = 7.0      
 
 def construir_secuencias(df_pivot, periodos_unicos, ventana=VENTANA):
     """
@@ -49,7 +48,6 @@ def construir_secuencias(df_pivot, periodos_unicos, ventana=VENTANA):
 
         serie = pd.Series(precios, index=periodos_unicos)
 
-        # Recorre la serie generando ventanas deslizantes
         for i in range(ventana, len(serie)):
             ventana_precios = serie.iloc[i - ventana:i].values
             precio_objetivo = serie.iloc[i]
@@ -91,22 +89,16 @@ def entrenar_lstm(df_pivot, periodos_unicos, ventana=VENTANA, epochs=50, batch_s
     print(f"Secuencias generadas: {len(X_seq)}")
     print(pd.Series(y_labels).value_counts())
 
-    # --- Normalización POR SERIE (cada producto tiene su propia escala de precio) ---
-    # Se normaliza cada ventana individualmente restando su propia media y dividiendo
-    # por su propia desviación, para que el LSTM aprenda PATRONES de movimiento,
-    # no el nivel absoluto de precio (que varía muchísimo entre productos).
     medias = X_seq.mean(axis=1, keepdims=True)
     stds = X_seq.std(axis=1, keepdims=True)
-    stds[stds == 0] = 1  # evita división por cero en series planas
+    stds[stds == 0] = 1  
     X_seq_norm = (X_seq - medias) / stds
     X_seq_norm = X_seq_norm.reshape(X_seq_norm.shape[0], X_seq_norm.shape[1], 1)
 
-    # --- Codificar target ---
     le_target = LabelEncoder()
     y_encoded = le_target.fit_transform(y_labels)
     y_categorical = to_categorical(y_encoded)
 
-    # --- Split temporal: se ordena por periodo_objetivo y se parte 80/20 ---
     df_meta = pd.DataFrame(meta)
     orden = df_meta.sort_values("periodo_objetivo").index.values
     n_train = int(len(orden) * 0.8)
@@ -118,11 +110,9 @@ def entrenar_lstm(df_pivot, periodos_unicos, ventana=VENTANA, epochs=50, batch_s
 
     print(f"\nTrain: {len(X_train)} secuencias | Test: {len(X_test)} secuencias")
 
-    # --- Pesos de clase balanceados (igual criterio que el resto del proyecto) ---
     pesos = compute_class_weight("balanced", classes=np.unique(y_train_labels), y=y_train_labels)
     class_weight_dict = dict(enumerate(pesos))
 
-    # --- Arquitectura LSTM ---
     modelo = Sequential([
         Masking(mask_value=0.0, input_shape=(ventana, 1)),
         LSTM(32, return_sequences=True),
@@ -130,7 +120,7 @@ def entrenar_lstm(df_pivot, periodos_unicos, ventana=VENTANA, epochs=50, batch_s
         LSTM(16),
         Dropout(0.3),
         Dense(16, activation="relu"),
-        Dense(3, activation="softmax"),  # 3 clases: Alza / Estable / Caída
+        Dense(3, activation="softmax"),  
     ])
 
     modelo.compile(
@@ -152,7 +142,6 @@ def entrenar_lstm(df_pivot, periodos_unicos, ventana=VENTANA, epochs=50, batch_s
         verbose=1,
     )
 
-    # --- Evaluación con las mismas métricas que el resto del proyecto ---
     y_pred_probs = modelo.predict(X_test)
     y_pred = np.argmax(y_pred_probs, axis=1)
 

@@ -3,7 +3,6 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 
-# Definición de ruta local para los datos históricos del clima consolidado
 _CLIMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'clima_historico.csv')
 
 def _cargar_clima():
@@ -14,16 +13,12 @@ def _cargar_clima():
     if not os.path.exists(_CLIMA_PATH):
         return {}
     df = pd.read_csv(_CLIMA_PATH)
-    # Normalizar nombre de provincia
     df['provincia'] = df['provincia'].str.strip().str.upper()
-    # Rezagos dentro del CSV (ordenados por provincia, año, mes)
     df = df.sort_values(['provincia', 'año', 'mes']).copy()
     df['temp_lag1']   = df.groupby('provincia')['temp'].shift(1)
     df['temp_lag2']   = df.groupby('provincia')['temp'].shift(2)
     df['precip_lag1'] = df.groupby('provincia')['precip'].shift(1)
     df['precip_lag2'] = df.groupby('provincia')['precip'].shift(2)
-    
-    # Cálculo de precipitación acumulada móvil trimestral para modelar impactos climáticos prolongados
     df['precip_acc3'] = df['precip'] + df['precip_lag1'].fillna(0) + df['precip_lag2'].fillna(0)
     
     lookup = {}
@@ -40,7 +35,6 @@ def _cargar_clima():
         }
     return lookup
 
-# Estructura de caché en memoria para evitar lecturas recurrentes del archivo de clima en disco
 _CLIMA_LOOKUP = None
 
 def limpiar_nombre_producto(texto):
@@ -63,7 +57,6 @@ def preprocesar_datos(df):
 
     df_limpio = df[df["estado_precio"] == "completo"].copy()
     
-    # 1. Limpieza de artefactos OCR y normalizacion de productos
     df_limpio["producto_limpio"] = df_limpio["producto_raw"].apply(limpiar_nombre_producto)
     conteo = df_limpio["producto_limpio"].value_counts()
     canonicos = list(conteo[conteo >= 5].index)
@@ -208,7 +201,6 @@ def _crear_features(df_pivot, periodos_unicos, mapa_categoria=None):
         std_var = np.std(variaciones) if len(variaciones) >= 3 else 7.0
         if pd.isna(std_var) or std_var == 0:
             std_var = 7.0
-        # Reducimos multiplicador dinámico a 0.35x para suavizar la variable objetivo y capturar mejor tendencias reales
         threshold = max(3.0, min(15.0, 0.35 * std_var))
 
         # ── Mapa periodo → índice para búsqueda rápida ───────────────────────
@@ -240,7 +232,7 @@ def _crear_features(df_pivot, periodos_unicos, mapa_categoria=None):
             precio_t6 = _get_precio(6)
 
             if pd.isna(precio_t1):
-                continue  # necesitamos al menos el precio inmediatamente anterior
+                continue  
 
             # ── Variaciones ──────────────────────────────────────────────────
             def _var_pct(p_now, p_ref):
@@ -249,7 +241,6 @@ def _crear_features(df_pivot, periodos_unicos, mapa_categoria=None):
                 return np.nan
 
             # ── Comparación año a año (mismo mes, 24 quincenas atrás ≈ 1 año) ─
-            # Los periodos son quincenales: 24 quincenas = 1 año
             precio_yoy = _get_precio(24)
             ratio_yoy = _var_pct(precio_actual, precio_yoy)
 
@@ -265,24 +256,19 @@ def _crear_features(df_pivot, periodos_unicos, mapa_categoria=None):
                 "tipo_mercado": tipo_mercado,
                 "periodo": periodo,
                 "precio_actual": precio_actual,
-                # Rezagos de precio
                 "precio_t1": precio_t1,
                 "precio_t2": precio_t2,
                 "precio_t3": precio_t3,
                 "precio_t4": precio_t4,
                 "precio_t5": precio_t5,
                 "precio_t6": precio_t6,
-                # Variaciones
                 "variacion_t2_t1": _var_pct(precio_t1, precio_t2),
                 "variacion_t3_t1": _var_pct(precio_t1, precio_t3),
-                # Comparación año a año
                 "variacion_yoy": ratio_yoy,
-                # Rolling
                 "promedio_movil_2q": round(val_pm2, 4) if pd.notna(val_pm2) else np.nan,
                 "promedio_movil_3q": round(val_pm3, 4) if pd.notna(val_pm3) else np.nan,
                 "volatilidad_3q": round(vol3.loc[periodo], 4) if pd.notna(vol3.loc[periodo]) else 0.0,
                 "momentum": round(momentum.loc[periodo], 4) if pd.notna(momentum.loc[periodo]) else 0.0,
-                # NUEVAS: Interacción temporal
                 "precio_vs_tendencia": round(((precio_t1 - val_pm3) / val_pm3) * 100, 2) if pd.notna(val_pm3) and val_pm3 > 0 else 0.0,
                 "cruce_medias": round(val_pm2 - val_pm3, 4) if pd.notna(val_pm2) and pd.notna(val_pm3) else 0.0,
             }
@@ -349,7 +335,6 @@ class TargetEncoder:
         return self
 
     def transform(self, categories):
-        # Convert category to list if it is a pandas Series/Index/ndarray or list
         cats = list(categories) if hasattr(categories, '__iter__') and not isinstance(categories, str) else [categories]
         res = np.array([self.mapping.get(cat, self.default_value) for cat in cats], dtype=np.float64)
         if isinstance(categories, str):
@@ -373,14 +358,12 @@ def _codificar_categoricas(df):
         "producto": te_producto,
         "provincia": te_provincia
     }
-    # Target encode canton, mercado, and presentacion
     for col in ["canton", "mercado", "presentacion", "tipo_mercado"]:
         if col in df.columns:
             te_col = TargetEncoder()
             df[f"{col}_encoded"] = te_col.fit_transform(df[col], df["variacion_real"])
             encoders[col] = te_col
             
-    # NUEVO: categoria como binaria (0=no_perecedero, 1=perecedero)
     df["categoria_perecedero"] = (df["categoria"] == "perecedero").astype(int)
     return df, encoders
 
@@ -400,10 +383,8 @@ def obtener_resumen(df_modelo):
 if __name__ == "__main__":
     import pandas as pd
 
-    # Cargar el dataset crudo (ajusta la ruta si es necesario)
     df_crudo = pd.read_csv('data/processed/dataset_crudo_sipa.csv')
 
-    # Ejecutar el preprocesamiento real
     resultado = preprocesar_datos(df_crudo)
     df_modelo = resultado['dataset_final']
 

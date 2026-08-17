@@ -38,10 +38,9 @@ os.makedirs(PROCESSED_DIR, exist_ok=True)
 os.makedirs(MODELS_DIR, exist_ok=True)
 
 app = Flask(__name__)
-app.secret_key = "sipa-clasificador-dev"  # solo se usa para los mensajes flash
+app.secret_key = "sipa-clasificador-dev" 
 
-# Caché en memoria para almacenar las estadísticas y reportes temporales generados en caliente
-# (por ejemplo: la tabla comparativa de modelos y matrices de confusión calculadas durante el entrenamiento).
+
 CACHE = {
     "reporte_extraccion": None,
     "resultado_preprocesamiento": None,
@@ -310,22 +309,18 @@ def prediccion_resultados_lote():
     
     df_lote_clean = None
     if df_predicho is not None:
-        # Filtrar para quedarse únicamente con el registro más reciente
-        # para cada combinación de Producto y Provincia (igual al dropdown individual).
         cols_agrupacion = ['producto', 'provincia']
         cols_existentes_agrup = [c for c in cols_agrupacion if c in df_predicho.columns]
         
         df_ordenado = df_predicho.sort_values('periodo')
         df_ultimos = df_ordenado.drop_duplicates(subset=cols_existentes_agrup, keep='last').copy()
         
-        # Ordenar alfabéticamente por producto, provincia, mercado, etc.
         df_ultimos = df_ultimos.sort_values(by=cols_existentes_agrup)
 
         cols_base = ['producto', 'provincia', 'canton', 'mercado', 'presentacion', 'periodo', 'precio_actual', 'prediccion']
         cols_presentes = [c for c in cols_base if c in df_ultimos.columns]
         df_lote_clean = df_ultimos[cols_presentes].copy()
         
-        # Calcular columna de probabilidad única basada en la predicción elegida
         if 'prob_Alza' in df_predicho.columns:
             def obtener_prob(row):
                 pred = row['prediccion']
@@ -336,7 +331,6 @@ def prediccion_resultados_lote():
                 return "-"
             df_lote_clean['Probabilidad'] = df_ultimos.apply(obtener_prob, axis=1)
             
-        # Renombrar columnas para que se vean amigables en la tabla
         renombres = {
             'producto': 'Producto',
             'provincia': 'Provincia',
@@ -349,7 +343,6 @@ def prediccion_resultados_lote():
         }
         df_lote_clean = df_lote_clean.rename(columns=renombres)
         
-        # Formatear la columna de Precio Actual como moneda
         if 'Precio Actual' in df_lote_clean.columns:
             df_lote_clean['Precio Actual'] = df_lote_clean['Precio Actual'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "-")
             
@@ -384,11 +377,4 @@ def descargar_lote():
 
 
 if __name__ == "__main__":
-    # use_reloader=False es importante: el entrenamiento puede tardar varios
-    # minutos, y PyTorch a veces modifica sus propios archivos de configuración
-    # internos (torch/_dynamo/config.py, torch/_functorch/config.py) al usarse.
-    # Con el reloader activo, Flask interpreta eso como "cambió el código" y
-    # reinicia el servidor a mitad del entrenamiento, matando la petición en curso.
-    # Si vas a editar el código y quieres que se recargue solo, cambia esto a
-    # use_reloader=True mientras programas (pero no mientras entrenas modelos).
     app.run(debug=True, use_reloader=False)
